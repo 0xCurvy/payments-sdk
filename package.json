@@ -1,0 +1,148 @@
+{
+  "name": "@0xcurvy/payments-sdk",
+  "version": "0.1.0",
+  "description": "Curvy payment helpers with a browser-safe root and Node-only merchant intent derivation.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xCurvy/curvy-sdk.git"
+  },
+  "homepage": "https://www.curvy.box",
+  "keywords": [
+    "curvy",
+    "payments",
+    "sdk",
+    "typescript",
+    "ethereum",
+    "eip-712"
+  ],
+  "packageManager": "pnpm@11.4.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/_cjs/index.cjs",
+  "module": "./dist/_esm/index.js",
+  "types": "./dist/_types/index.d.ts",
+  "typings": "./dist/_types/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/_types/index.d.ts",
+        "default": "./dist/_esm/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/index.d.cts",
+        "default": "./dist/_cjs/index.cjs"
+      }
+    },
+    "./chain": {
+      "import": {
+        "types": "./dist/_types/chain/index.d.ts",
+        "default": "./dist/_esm/chain/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/chain/index.d.cts",
+        "default": "./dist/_cjs/chain/index.cjs"
+      }
+    },
+    "./contracts": {
+      "import": {
+        "types": "./dist/_types/contracts/index.d.ts",
+        "default": "./dist/_esm/contracts/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/contracts/index.d.cts",
+        "default": "./dist/_cjs/contracts/index.cjs"
+      }
+    },
+    "./merchant": {
+      "import": {
+        "types": "./dist/_types/merchant/index.d.ts",
+        "default": "./dist/_esm/merchant/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/merchant/index.d.cts",
+        "default": "./dist/_cjs/merchant/index.cjs"
+      }
+    },
+    "./merchant/keys": {
+      "import": {
+        "types": "./dist/_types/merchant/keys/index.d.ts",
+        "default": "./dist/_esm/merchant/keys/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/merchant/keys/index.d.cts",
+        "default": "./dist/_cjs/merchant/keys/index.cjs"
+      }
+    },
+    "./intent": {
+      "import": {
+        "types": "./dist/_types/intent/index.d.ts",
+        "default": "./dist/_esm/intent/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/intent/index.d.cts",
+        "default": "./dist/_cjs/intent/index.cjs"
+      }
+    },
+    "./transport": {
+      "import": {
+        "types": "./dist/_types/transport/index.d.ts",
+        "default": "./dist/_esm/transport/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/transport/index.d.cts",
+        "default": "./dist/_cjs/transport/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:publish": "node scripts/build.mjs --publish",
+    "build-win": "node scripts/build.mjs",
+    "build-publish-win": "node scripts/build.mjs --publish",
+    "watch": "tsup --watch",
+    "clean": "rimraf dist .turbo",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check src tsup.config.ts vitest.config.ts",
+    "check:fix": "biome check --write src tsup.config.ts vitest.config.ts",
+    "format": "biome format --write src tsup.config.ts vitest.config.ts",
+    "lint": "biome lint src tsup.config.ts vitest.config.ts",
+    "lint:fix": "biome lint --write src tsup.config.ts vitest.config.ts",
+    "test": "vitest run src",
+    "test:build": "node scripts/test-build.mjs",
+    "prepublishOnly": "pnpm run test:build",
+    "prepare": "node scripts/prepare.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.50.4"
+  },
+  "peerDependencies": {
+    "@0xcurvy/rs-core-wasm": "0.1.0-rc.4"
+  },
+  "peerDependenciesMeta": {
+    "@0xcurvy/rs-core-wasm": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@0xcurvy/rs-core-wasm": "0.1.0-rc.4",
+    "@arethetypeswrong/cli": "^0.18.3",
+    "@types/node": "catalog:",
+    "publint": "^0.3.21",
+    "rimraf": "^6.0.1",
+    "tsup": "8.5.0",
+    "typescript": "catalog:",
+    "vitest": "3.1.4"
+  },
+  "engines": {
+    "node": ">=22.16"
+  }
+}
