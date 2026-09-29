@@ -1,6 +1,6 @@
 {
   "name": "@0xcurvy/payments-sdk",
-  "version": "0.1.1-rc.1",
+  "version": "0.1.1",
   "description": "Curvy payment helpers with a browser-safe root and Node-only merchant intent derivation.",
   "license": "Apache-2.0",
   "repository": {
