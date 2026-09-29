@@ -1,3 +1,4 @@
+import { CURVY_FACILITATOR_URL } from "./defaults";
 import { parseSettleResponse, parseSupportedResponse, parseVerifyResponse } from "./parse";
 import {
   X402_VERSION,
@@ -13,8 +14,11 @@ export type FacilitatorHeaders =
   | (() => Record<string, string> | Promise<Record<string, string>>);
 
 export interface FacilitatorClientOptions {
-  /** Facilitator base URL, for example `https://facilitator.curvy.box`. */
-  url: string;
+  /**
+   * Facilitator base URL. Defaults to Curvy's, `https://api.curvy.box/portal/x402`, which the portal broadcaster
+   * serves. Any x402 v2 facilitator works, for example Coinbase's.
+   */
+  url?: string;
   /** `fetch` implementation; defaults to the global one. */
   fetch?: typeof globalThis.fetch;
   /** Per-request timeout. Defaults to 30 s. A timed-out `settle` is indeterminate: the transfer may still land. */
@@ -60,8 +64,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Client for any x402 v2 facilitator (`/supported`, `/verify`, `/settle`) on plain `fetch`. Works in Node and browsers. */
-export function createFacilitatorClient(options: FacilitatorClientOptions): FacilitatorClient {
-  const url = options.url.replace(/\/+$/, "");
+export function createFacilitatorClient(options: FacilitatorClientOptions = {}): FacilitatorClient {
+  const url = (options.url ?? CURVY_FACILITATOR_URL).replace(/\/+$/, "");
   if (!/^https?:\/\//.test(url)) throw new Error("facilitator url must be http(s)");
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("a fetch implementation is required");

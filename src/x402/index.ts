@@ -11,6 +11,7 @@ export {
   type PortalPaymentStatus,
   TERMINAL_PORTAL_FAILURES,
 } from "./broadcaster";
+export { CURVY_BROADCASTER_URL, CURVY_FACILITATOR_PATH, CURVY_FACILITATOR_URL, facilitatorUrlFor } from "./defaults";
 export {
   createFacilitatorClient,
   type FacilitatorClient,

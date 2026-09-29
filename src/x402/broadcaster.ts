@@ -1,6 +1,7 @@
 import type { Address, Hex } from "viem";
 import { getAddress, isAddress, isHex } from "viem";
 import { record } from "../utils/validation";
+import { CURVY_BROADCASTER_URL } from "./defaults";
 import { parseCurvyDeployment, parseUint } from "./parse";
 import type { CurvyDeployment } from "./protocol";
 
@@ -9,8 +10,8 @@ export type BroadcasterHeaders =
   | (() => Record<string, string> | Promise<Record<string, string>>);
 
 export interface BroadcasterClientOptions {
-  /** Portal broadcaster base URL. */
-  url: string;
+  /** Portal broadcaster base URL. Defaults to Curvy's production broadcaster, `https://api.curvy.box`. */
+  url?: string;
   fetch?: typeof globalThis.fetch;
   /** Per-request timeout. Defaults to 30 s. */
   timeoutMs?: number;
@@ -126,8 +127,8 @@ function parseStatus(value: unknown): PortalPaymentStatus {
 }
 
 /** Client for Curvy's portal broadcaster, the service that shields funded payment portals. */
-export function createBroadcasterClient(options: BroadcasterClientOptions): BroadcasterClient {
-  const url = options.url.replace(/\/+$/, "");
+export function createBroadcasterClient(options: BroadcasterClientOptions = {}): BroadcasterClient {
+  const url = (options.url ?? CURVY_BROADCASTER_URL).replace(/\/+$/, "");
   if (!/^https?:\/\//.test(url)) throw new Error("broadcaster url must be http(s)");
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("a fetch implementation is required");

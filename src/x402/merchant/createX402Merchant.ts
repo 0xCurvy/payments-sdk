@@ -19,6 +19,7 @@ import {
   type PortalPaymentStatus,
   TERMINAL_PORTAL_FAILURES,
 } from "../broadcaster";
+import { facilitatorUrlFor } from "../defaults";
 import { createFacilitatorClient, type FacilitatorClient } from "../facilitator";
 import { decodeBase64Json, encodeBase64Json } from "../header";
 import { parsePaymentPayload, parseTransferPayload, requirementsEqual } from "../parse";
@@ -61,15 +62,18 @@ export type X402Scheme = typeof EXACT_SCHEME | typeof TRANSFER_SCHEME;
 export interface X402MerchantConfig {
   /**
    * Curvy's portal broadcaster URL or client. It shields every funded portal into your note, the same way it
-   * does for human checkout, and tells the SDK the Curvy contract addresses on the chain.
+   * does for human checkout, and tells the SDK the Curvy contract addresses on the chain. Defaults to Curvy's
+   * production broadcaster, `https://api.curvy.box`.
    */
-  broadcaster: string | BroadcasterClient;
+  broadcaster?: string | BroadcasterClient;
   /**
-   * Any x402 v2 facilitator that settles `exact` (EIP-3009) payments, for example Coinbase's. Optional: without
-   * it only `curvy-transfer` is offered, where the payer sends the tokens itself.
+   * The x402 v2 facilitator that settles `exact` (EIP-3009) payments. Defaults to Curvy's, served by the
+   * broadcaster in use under `/portal/x402` (`https://api.curvy.box/portal/x402` in production). Pass any other
+   * x402 v2 facilitator URL (for example Coinbase's) to use it instead, or `false` to offer only `curvy-transfer`,
+   * where the payer sends the tokens itself.
    */
-  facilitator?: string | FacilitatorClient;
-  /** Schemes to offer. Defaults to `curvy-transfer`, plus `exact` when a facilitator is set. */
+  facilitator?: string | FacilitatorClient | false;
+  /** Schemes to offer. Defaults to `exact` and `curvy-transfer`, or `curvy-transfer` alone when `facilitator` is false. */
   schemes?: X402Scheme[];
   /** JSON-RPC endpoint of the payment chain. Alternatively pass `publicClient`. */
   rpcUrl?: string;
@@ -249,17 +253,22 @@ export function toResponse(response: X402HttpResponse): Response {
 
 export async function createX402Merchant(config: X402MerchantConfig): Promise<X402Merchant> {
   const fetchOption = config.fetch ? { fetch: config.fetch } : {};
-  const facilitator =
-    config.facilitator === undefined
-      ? undefined
-      : typeof config.facilitator === "string"
-        ? createFacilitatorClient({ url: config.facilitator, ...fetchOption })
-        : config.facilitator;
-  if (config.broadcaster === undefined) throw new Error("broadcaster is required");
   const broadcaster =
-    typeof config.broadcaster === "string"
-      ? createBroadcasterClient({ url: config.broadcaster, ...fetchOption })
+    config.broadcaster === undefined || typeof config.broadcaster === "string"
+      ? createBroadcasterClient({
+          ...(config.broadcaster === undefined ? {} : { url: config.broadcaster }),
+          ...fetchOption,
+        })
       : config.broadcaster;
+  // The facilitator travels with the broadcaster: a local stack's broadcaster serves its own under /portal/x402.
+  const facilitator =
+    config.facilitator === false
+      ? undefined
+      : config.facilitator === undefined
+        ? createFacilitatorClient({ url: facilitatorUrlFor(broadcaster.url), ...fetchOption })
+        : typeof config.facilitator === "string"
+          ? createFacilitatorClient({ url: config.facilitator, ...fetchOption })
+          : config.facilitator;
   const schemes: X402Scheme[] = config.schemes ?? [...(facilitator ? [EXACT_SCHEME] : []), TRANSFER_SCHEME];
   if (schemes.length === 0) throw new Error("at least one scheme must be offered");
   for (const scheme of schemes) {

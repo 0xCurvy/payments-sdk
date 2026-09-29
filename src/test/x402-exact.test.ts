@@ -18,6 +18,9 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { pendingNotesAbi } from "../contracts";
 import {
+  CURVY_BROADCASTER_URL,
+  CURVY_FACILITATOR_URL,
+  createBroadcasterClient,
   createExactPayment,
   createFacilitatorClient,
   createTransferPayment,
@@ -536,9 +539,59 @@ describe("createX402Merchant", () => {
         harness({ kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" }], extensions: [], signers: {} }),
       ),
     ).rejects.toThrow(/does not support x402 v2 "exact" on eip155:31337/);
-    await expect(
-      createX402Merchant({ publicClient: h.publicClient as never, recipient: RECIPIENT, token: TOKEN } as never),
-    ).rejects.toThrow(/broadcaster is required/);
+  });
+
+  it("defaults to Curvy's broadcaster and to the facilitator that broadcaster serves", async () => {
+    const h = harness();
+    // Explicit broadcaster URL: the facilitator follows it to <broadcaster>/portal/x402.
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/portal/x402/supported") return Response.json(supportedResponse());
+      if (path === "/portal/networks/31337") {
+        return Response.json({
+          data: {
+            chainId: CHAIN_ID,
+            aggregator: AGGREGATOR,
+            portalFactory: PORTAL_FACTORY,
+            vault: VAULT,
+            minPortalUsd: 0,
+            currencies: [{ address: TOKEN, symbol: "USDC", decimals: 6, vaultTokenId: "3" }],
+          },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const merchant = await createX402Merchant({
+      broadcaster: "http://broadcaster.test/",
+      publicClient: h.publicClient as never,
+      recipient: RECIPIENT,
+      token: TOKEN,
+      autoShield: false,
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    expect(merchant.broadcaster.url).toBe("http://broadcaster.test");
+    expect(merchant.facilitator?.url).toBe("http://broadcaster.test/portal/x402");
+    expect(merchant.schemes).toEqual(["exact", "curvy-transfer"]);
+    merchant.close();
+
+    // Nothing configured: production Curvy endpoints.
+    const production = await createX402Merchant({
+      publicClient: h.publicClient as never,
+      recipient: RECIPIENT,
+      token: TOKEN,
+      autoShield: false,
+      fetch: (async (url: string | URL | Request) => {
+        const parsed = new URL(String(url));
+        expect(parsed.origin).toBe("https://api.curvy.box");
+        return fetchMock(`http://broadcaster.test${parsed.pathname}`);
+      }) as unknown as typeof fetch,
+    });
+    expect(production.broadcaster.url).toBe(CURVY_BROADCASTER_URL);
+    expect(production.facilitator?.url).toBe(CURVY_FACILITATOR_URL);
+    expect(production.facilitator?.url).toBe("https://api.curvy.box/portal/x402");
+    production.close();
+    expect(createBroadcasterClient().url).toBe("https://api.curvy.box");
+    expect(createFacilitatorClient().url).toBe("https://api.curvy.box/portal/x402");
   });
 });
 
@@ -891,6 +944,7 @@ describe("createX402Merchant: broadcaster mode", () => {
     const h = harness();
     const merchant = await createX402Merchant({
       broadcaster: h.broadcaster,
+      facilitator: false,
       publicClient: h.publicClient as never,
       recipient: RECIPIENT,
       token: TOKEN,
@@ -905,6 +959,7 @@ describe("createX402Merchant: broadcaster mode", () => {
     await expect(
       createX402Merchant({
         broadcaster: h.broadcaster,
+        facilitator: false,
         publicClient: h.publicClient as never,
         recipient: RECIPIENT,
         token: TOKEN,
