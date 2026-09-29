@@ -1,0 +1,11 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.2/schema.json",
+  "root": false,
+  "extends": "//",
+  "overrides": [
+    {
+      "includes": ["src/contracts/abi/**"],
+      "formatter": { "enabled": false }
+    }
+  ]
+}

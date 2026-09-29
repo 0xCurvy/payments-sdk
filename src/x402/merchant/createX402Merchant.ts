@@ -1,8 +1,6 @@
 import type { Address, Hex, PublicClient } from "viem";
 import { createPublicClient, erc20Abi, getAddress, http, isAddress, isHex, parseEventLogs } from "viem";
-import { findNoteInReceipt } from "../../chain/findNoteInReceipt";
 import { predictPortalAddress } from "../../chain/predictPortalAddress";
-import { verifyPayment } from "../../chain/verifyPayment";
 import { vaultAbi } from "../../contracts";
 import {
   type ChainFees,
@@ -12,7 +10,10 @@ import {
   readChainFees,
 } from "../../economics/fees";
 import { createPaymentRequest } from "../../merchant/createPaymentRequest";
-import type { PaymentRecipient } from "../../types";
+import { type RecipientParameters, resolveRecipient } from "../../merchant/internal/resolveRecipient";
+import { PaymentVerificationError, verifyPayment } from "../../merchant/verifyPayment";
+import type { PaymentIntent } from "../../types";
+import { DEFAULT_CHECKOUT_COMPLETE_PATH } from "../../utils/validation";
 import {
   type BroadcasterClient,
   createBroadcasterClient,
@@ -59,7 +60,13 @@ export interface X402PaymentEvent {
 /** Payment schemes a merchant can offer in its 402. */
 export type X402Scheme = typeof EXACT_SCHEME | typeof TRANSFER_SCHEME;
 
-export interface X402MerchantConfig {
+/**
+ * `receivingKeys` (preferred) is the one value from the web app's Payments setup
+ * (`CURVY_PAYMENTS_PUBLIC_KEY`); `recipient` is the same public keys as three strings. Pass exactly one.
+ */
+export type X402MerchantConfig = RecipientParameters & X402MerchantOptions;
+
+export interface X402MerchantOptions {
   /**
    * Curvy's portal broadcaster URL or client. It shields every funded portal into your note, the same way it
    * does for human checkout, and tells the SDK the Curvy contract addresses on the chain. Defaults to Curvy's
@@ -78,8 +85,6 @@ export interface X402MerchantConfig {
   /** JSON-RPC endpoint of the payment chain. Alternatively pass `publicClient`. */
   rpcUrl?: string;
   publicClient?: X402MerchantClient;
-  /** Your **public** receiving keys. */
-  recipient: PaymentRecipient;
   /** The token you charge in (USDC). It must be registered in the Curvy vault. */
   token: Address;
   /** The token's EIP-712 domain. Read from the contract (`name()`, `version()`) when omitted. */
@@ -252,6 +257,8 @@ export function toResponse(response: X402HttpResponse): Response {
 }
 
 export async function createX402Merchant(config: X402MerchantConfig): Promise<X402Merchant> {
+  // A mistyped or cut-off receiving key fails here, before any network call.
+  const recipient = resolveRecipient(config);
   const fetchOption = config.fetch ? { fetch: config.fetch } : {};
   const broadcaster =
     config.broadcaster === undefined || typeof config.broadcaster === "string"
@@ -489,7 +496,7 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
 
   async function challenge(resource: string, options: X402ChargeOptions, error?: string): Promise<X402ChargeResult> {
     const intent = await createPaymentRequest({
-      recipient: config.recipient,
+      recipient,
       amount: options.price,
       token,
       chainId,
@@ -838,24 +845,31 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     if (payment.status !== "shielded" && payment.status !== "settled") {
       throw new Error(`cannot confirm a ${payment.status} payment`);
     }
-    // With the shield transaction: inclusion + confirmations. Without it (reply lost): the note must have been
-    // committed in a batch, found by scanning the aggregator for our payment reference.
-    const confirmed = await verifyPayment({
+    // The shield transaction when the broadcaster reported it; otherwise scan from the transfer into the portal,
+    // which always comes first. With neither, wait: the shield poll fills in the shield transaction.
+    const lookup = payment.shieldTxHash
+      ? { txHash: payment.shieldTxHash }
+      : payment.settleTxHash
+        ? { fromBlock: (await publicClient.getTransactionReceipt({ hash: payment.settleTxHash })).blockNumber }
+        : null;
+    if (!lookup) return payment;
+    // The note must pay this request's owner, token and amount after fees, not merely carry its payment reference.
+    const verification = await verifyPayment({
       publicClient,
       aggregatorAddress: deployment.aggregator,
-      ephemeralKey: payment.note.ephemeralKey,
+      request: paymentRequest(payment),
       confirmations,
-      ...(payment.shieldTxHash ? { txHash: payment.shieldTxHash } : {}),
+      ...lookup,
     });
-    if (!confirmed) return payment;
-    if (payment.shieldTxHash) {
-      const receipt = await publicClient.getTransactionReceipt({ hash: payment.shieldTxHash });
-      const note = findNoteInReceipt(receipt, payment.note.ephemeralKey, deployment.aggregator);
-      if (note) {
-        payment.noteId = note.noteId.toString();
-        payment.netAmount = note.netAmount.toString();
-      }
+    if (verification.status === "underpaid" || verification.status === "wrong_token") {
+      payment.error = `payment ${verification.status.replace("_", " ")}`;
+      await store.put(payment);
+      emit("error", payment, new Error(payment.error));
+      return payment;
     }
+    if (verification.status !== "paid" || !verification.payment) return payment;
+    payment.noteId = verification.payment.noteId.toString();
+    payment.netAmount = verification.payment.netAmount.toString();
     payment.status = "confirmed";
     delete payment.error;
     await store.put(payment);
@@ -865,8 +879,26 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
 
   /** `verifyPayment` throws these for a transaction that can never become our shield. */
   function isDefinitiveConfirmError(error: unknown): boolean {
-    const message = errorMessage(error);
-    return message.includes("shield transaction reverted") || message.includes("not a valid Curvy shield payment");
+    return (
+      error instanceof PaymentVerificationError &&
+      (error.code === "REVERTED" || error.code === "NOT_A_SHIELD" || error.code === "UNRELATED")
+    );
+  }
+
+  /** The request this payment's 402 was issued for, rebuilt from the record and this merchant's settings. */
+  function paymentRequest(payment: X402Payment): PaymentIntent {
+    return {
+      token,
+      amount: payment.amount,
+      chainId,
+      ownerHash: payment.note.ownerHash,
+      ephemeralKeyX: payment.note.ephemeralKey[0],
+      ephemeralKeyY: payment.note.ephemeralKey[1],
+      viewTag: payment.note.viewTag,
+      merchantOrigin: merchantOrigin ?? new URL(payment.resource).origin,
+      checkoutCompletePath: DEFAULT_CHECKOUT_COMPLETE_PATH,
+      expiry: Math.floor(payment.expiresAt / 1_000),
+    };
   }
 
   async function shieldAndConfirm(payTo: string): Promise<void> {

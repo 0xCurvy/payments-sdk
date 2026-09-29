@@ -1,10 +1,11 @@
 /**
  * Unit coverage for the x402 exact merchant integrator path:
- * createPaymentRequest → predictPortalAddress(explicit recovery address) → verifyPayment / findNoteInReceipt.
+ * createPaymentRequest → predictPortalAddress(explicit recovery address) → findNoteInReceipt.
+ * The hardened payment check (`/merchant` verifyPayment) has its own suite in verify-payment.test.ts.
  * No Express, @x402/*, or facilitator HTTP.
  */
 import { encodeAbiParameters, encodeEventTopics, getAddress, type Hex, type TransactionReceipt, zeroHash } from "viem";
-import { findNoteInReceipt, pendingNotesAbi, predictPortalAddress, verifyPayment } from "../index";
+import { findNoteInReceipt, pendingNotesAbi, predictPortalAddress } from "../index";
 import { createPaymentRequest } from "../merchant";
 
 const TOKEN = getAddress("0x0000000000000000000000000000000000000003");
@@ -13,7 +14,6 @@ const PORTAL_FACTORY = getAddress("0x0000000000000000000000000000000000000006");
 /** Anvil #0, used as an explicit recovery address. */
 const FACILITATOR_SUBMITTER = getAddress("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 const PREDICTED_PAY_TO = getAddress("0x00000000000000000000000000000000000000A1");
-const CONFIRMATIONS = 12;
 const PRICE = 10_000n;
 const RECIPIENT = {
   S: "18841156662615403723520443807716409278140486251221355574263061434503921265588.98357793752770194678499426326386336085357653965912017495890904868125096440617",
@@ -116,7 +116,7 @@ describe("x402 merchant payments-sdk helpers", () => {
     );
   });
 
-  it("confirms shield evidence for the challenge ephemeral key", async () => {
+  it("finds the challenge's note in a shield receipt", async () => {
     const intent = await createPaymentRequest({
       recipient: RECIPIENT,
       amount: PRICE,
@@ -126,27 +126,11 @@ describe("x402 merchant payments-sdk helpers", () => {
       ttlSeconds: 300,
     });
     const ephemeralKey = [BigInt(intent.ephemeralKeyX), BigInt(intent.ephemeralKeyY)] as const;
-    const txHash = `0x${"ab".repeat(32)}` as Hex;
     const receipt = {
       status: "success" as const,
       blockNumber: 12n,
       logs: [pendingLog(AGGREGATOR, ephemeralKey)],
     };
-
-    await expect(
-      verifyPayment({
-        publicClient: {
-          getTransaction: vi.fn(),
-          getTransactionReceipt: vi.fn().mockResolvedValue(receipt),
-          getBlockNumber: vi.fn().mockResolvedValue(23n),
-          getLogs: vi.fn().mockResolvedValue([]),
-        },
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey,
-        confirmations: CONFIRMATIONS,
-        txHash,
-      }),
-    ).resolves.toBe(true);
 
     expect(findNoteInReceipt(receipt, ephemeralKey, AGGREGATOR)).toEqual({
       noteId: 202n,

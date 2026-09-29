@@ -2,6 +2,7 @@ import type { Address } from "viem";
 import { isAddressEqual, recoverTypedDataAddress } from "viem/utils";
 import { parseMerchantKeySet } from "../merchant/keys/parseMerchantKeySet";
 import type { MerchantKeySet, PaymentIntent, SignedPaymentIntent } from "../types";
+import { MAX_PAYMENT_REQUEST_TTL_SECONDS } from "../utils/validation";
 import { buildPaymentIntentTypedData } from "./buildPaymentIntentTypedData";
 import { parseSignedPaymentIntent } from "./parseSignedPaymentIntent";
 
@@ -17,7 +18,13 @@ export interface VerifiedPaymentIntent {
   signer: Address;
 }
 
-/** Verify the signature, active signer membership, expiry, chain, and currency. */
+/** Allowed clock skew between the signer and the verifier on top of the 24 h lifetime cap. */
+const LIFETIME_CLOCK_SKEW_SECONDS = 300;
+
+/**
+ * Verify the signature, active signer membership, expiry, lifetime (at most 24 h, plus 5 min clock skew),
+ * chain, and currency.
+ */
 export async function verifyPaymentIntent(
   payment: SignedPaymentIntent | unknown,
   parameters: VerifyPaymentIntentParameters,
@@ -33,6 +40,9 @@ export async function verifyPaymentIntent(
     throw new Error(`wrong token: expected ${parameters.expectedToken}`);
   }
   if (now >= parsed.intent.expiry) throw new Error("payment intent has expired");
+  if (parsed.intent.expiry - now > MAX_PAYMENT_REQUEST_TTL_SECONDS + LIFETIME_CLOCK_SKEW_SECONDS) {
+    throw new Error("payment intent lifetime exceeds 24 hours");
+  }
 
   const signer = await recoverTypedDataAddress({
     ...buildPaymentIntentTypedData(parsed.intent),

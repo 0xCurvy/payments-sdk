@@ -1,39 +1,39 @@
-﻿import type { Address } from "viem";
+import type { Address } from "viem";
 import { parsePaymentIntent } from "../intent/parsePaymentIntent";
-import type { PaymentIntent, PaymentRecipient } from "../types";
-import { DEFAULT_PAYMENT_REQUEST_TTL_SECONDS } from "../utils/validation";
+import type { PaymentIntent } from "../types";
+import { DEFAULT_PAYMENT_REQUEST_TTL_SECONDS, paymentRequestTtlSeconds } from "../utils/validation";
 import { derivePaymentNote } from "./internal/derivePaymentNote";
+import { type RecipientParameters, resolveRecipient } from "./internal/resolveRecipient";
 
-export interface BuildPaymentRequestParameters {
-  recipient: PaymentRecipient;
+export type BuildPaymentRequestParameters = RecipientParameters & {
   amount: bigint;
   token: Address;
   chainId: number;
   merchantOrigin: string;
   checkoutCompletePath?: string;
+  /** Request lifetime: a positive safe integer of at most 86400 (24 h). */
   ttlSeconds: number;
-}
+};
 
-export interface CreatePaymentRequestParameters {
-  recipient: PaymentRecipient;
+export type CreatePaymentRequestParameters = RecipientParameters & {
   amount: bigint;
   token: Address;
   chainId: number;
   merchantOrigin: string;
   checkoutCompletePath?: string;
+  /** Request lifetime: a positive safe integer of at most 86400 (24 h). Default 600. */
   ttlSeconds?: number;
-}
+};
 
 export async function buildPaymentRequest(parameters: BuildPaymentRequestParameters): Promise<PaymentIntent> {
+  const recipient = resolveRecipient(parameters);
   if (parameters.amount <= 0n) throw new Error("amount must be greater than zero");
-  if (!Number.isSafeInteger(parameters.ttlSeconds) || parameters.ttlSeconds <= 0) {
-    throw new Error("ttlSeconds must be a positive safe integer");
-  }
+  const ttlSeconds = paymentRequestTtlSeconds(parameters.ttlSeconds);
   const now = Math.floor(Date.now() / 1_000);
-  const expiry = now + parameters.ttlSeconds;
+  const expiry = now + ttlSeconds;
   if (!Number.isSafeInteger(expiry)) throw new Error("payment request expiry exceeds the safe integer range");
 
-  const note = await derivePaymentNote(parameters.recipient);
+  const note = await derivePaymentNote(recipient);
   return parsePaymentIntent({
     token: parameters.token,
     amount: parameters.amount.toString(),
@@ -41,7 +41,7 @@ export async function buildPaymentRequest(parameters: BuildPaymentRequestParamet
     ownerHash: note.ownerHash.toString(),
     ephemeralKeyX: note.ephemeralKey[0].toString(),
     ephemeralKeyY: note.ephemeralKey[1].toString(),
-    viewTag: Number(note.viewTag),
+    viewTag: note.viewTag,
     merchantOrigin: parameters.merchantOrigin,
     ...(parameters.checkoutCompletePath === undefined ? {} : { checkoutCompletePath: parameters.checkoutCompletePath }),
     expiry,

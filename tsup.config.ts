@@ -35,7 +35,23 @@ export default defineConfig(() => {
     clean: false,
     // Keep viem as the normal public dependency so browser import maps can share
     // their existing vendored viem/noble graph instead of downloading a second crypto stack.
-    external: ["viem", "viem/utils", "@0xcurvy/rs-core-wasm", "node:fs/promises"],
+    external: ["viem", "viem/accounts", "viem/utils", "@0xcurvy/rs-core-wasm", "node:fs/promises"],
+  };
+
+  // The `create-signer` command: a Node-only binary, never part of the library entries.
+  const cli: Options = {
+    entry: { cli: "src/cli/index.ts" },
+    format: ["esm"],
+    outDir: "dist/_esm",
+    platform: "node",
+    target: "node22",
+    bundle: true,
+    splitting: false,
+    sourcemap: false,
+    clean: false,
+    dts: false,
+    banner: { js: "#!/usr/bin/env node" },
+    external: ["viem", "viem/accounts"],
   };
 
   const esm: Options = {
@@ -60,12 +76,12 @@ export default defineConfig(() => {
   // `pnpm run build:publish`) adds them back. CURVY_PAYMENTS_PASS lets package
   // scripts run JS and DTS separately so declaration bundling gets its own heap.
   if (!process.env.CURVY_PAYMENTS_PUBLISH) {
-    return selectPasses([esm], [esmDts]);
+    return selectPasses([esm, cli], [esmDts]);
   }
 
   const publishFormat = process.env.CURVY_PAYMENTS_FORMAT;
   if (publishFormat === "esm") {
-    return selectPasses([esm], [esmDts]);
+    return selectPasses([esm, cli], [esmDts]);
   }
 
   const cjs: Options = {
@@ -76,7 +92,7 @@ export default defineConfig(() => {
     dts: false,
     // rs-core's generated glue is ESM-only. Bundle that glue for require()
     // consumers while its packaged WASM remains resolved from the peer.
-    external: ["viem", "viem/utils", "node:fs/promises"],
+    external: ["viem", "viem/accounts", "viem/utils", "node:fs/promises"],
     noExternal: ["@0xcurvy/rs-core-wasm"],
   };
 
@@ -91,11 +107,11 @@ export default defineConfig(() => {
     return selectPasses([cjs], [cjsDts]);
   }
   if (buildPass === "js") {
-    return [esm, cjs];
+    return [esm, cli, cjs];
   }
   if (buildPass === "dts") {
     return [esmDts, cjsDts];
   }
 
-  return [esm, cjs, esmDts, cjsDts];
+  return [esm, cli, cjs, esmDts, cjsDts];
 });

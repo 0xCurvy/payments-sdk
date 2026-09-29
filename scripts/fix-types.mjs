@@ -1,4 +1,4 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 const file = new URL("../src/test/payments.test.ts", import.meta.url);
 let t = fs.readFileSync(file, "utf8");
 t = t.replace(/txHash: `\$\{[^`]+\}`/g, (m) => m.replace("txHash:", "txHash:") );

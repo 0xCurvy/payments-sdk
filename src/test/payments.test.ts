@@ -1,28 +1,22 @@
-﻿import {
-  encodeAbiParameters,
-  encodeEventTopics,
-  getAddress,
-  type Hex,
-  TransactionNotFoundError,
-  type TransactionReceipt,
-  TransactionReceiptNotFoundError,
-  zeroHash,
-} from "viem";
+import { encodeAbiParameters, encodeEventTopics, getAddress, type Hex, type TransactionReceipt, zeroHash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
+  buildCheckoutCompleteUrl,
+  buildCheckoutRetryUrl,
   buildCheckoutUrl,
   buildMerchantKeySet,
   buildPaymentIntentTypedData,
   DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
   decodePaymentIntentFragment,
   findNoteInReceipt,
+  MAX_PAYMENT_REQUEST_TTL_SECONDS,
   parsePaymentIntent,
   pendingNotesAbi,
   signPaymentIntent,
-  verifyPayment,
   verifyPaymentIntent,
 } from "../index";
-import { createPaymentRequest, initialize } from "../merchant";
+import { buildPaymentRequest, createPaymentRequest, initialize } from "../merchant";
+import { viewTag } from "../utils/validation";
 
 const TOKEN = getAddress("0x0000000000000000000000000000000000000003");
 const AGGREGATOR = getAddress("0x0000000000000000000000000000000000000004");
@@ -66,38 +60,6 @@ function pendingLog(address: `0x${string}`): TransactionReceipt["logs"][number] 
     topics: encodeEventTopics({ abi: pendingNotesAbi, eventName: "PendingNotes" }) as [Hex, ...Hex[]],
     transactionHash: `0x${"12".repeat(32)}`,
     transactionIndex: 1,
-  };
-}
-
-function committedLog(address: `0x${string}`, noteIds: readonly bigint[]): TransactionReceipt["logs"][number] {
-  return {
-    address,
-    blockHash: zeroHash,
-    blockNumber: 15n,
-    data: encodeAbiParameters([{ type: "uint256[]" }], [noteIds]),
-    logIndex: 4,
-    removed: false,
-    topics: encodeEventTopics({
-      abi: pendingNotesAbi,
-      eventName: "CommittedNotes",
-      args: { batchIndex: 1n },
-    }) as [Hex, ...Hex[]],
-    transactionHash: `0x${"13".repeat(32)}`,
-    transactionIndex: 2,
-  };
-}
-
-function receiptClient(overrides: {
-  getTransactionReceipt?: ReturnType<typeof vi.fn>;
-  getTransaction?: ReturnType<typeof vi.fn>;
-  getBlockNumber?: ReturnType<typeof vi.fn>;
-  getLogs?: ReturnType<typeof vi.fn>;
-}) {
-  return {
-    getTransaction: overrides.getTransaction ?? vi.fn(),
-    getTransactionReceipt: overrides.getTransactionReceipt ?? vi.fn(),
-    getBlockNumber: overrides.getBlockNumber ?? vi.fn().mockResolvedValue(23n),
-    getLogs: overrides.getLogs ?? vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -145,6 +107,67 @@ describe("payments", () => {
     expect(intent.expiry).toBe(1_000 + DEFAULT_PAYMENT_REQUEST_TTL_SECONDS);
   });
 
+  it("caps ttlSeconds at 24 hours in createPaymentRequest, buildPaymentRequest and initialize", async () => {
+    expect(MAX_PAYMENT_REQUEST_TTL_SECONDS).toBe(86_400);
+    const base = {
+      recipient: RECIPIENT,
+      amount: 10_000n,
+      token: TOKEN,
+      chainId: 31_337,
+      merchantOrigin: "https://merchant.example",
+    };
+    for (const ttlSeconds of [MAX_PAYMENT_REQUEST_TTL_SECONDS + 1, 7 * 86_400]) {
+      await expect(createPaymentRequest({ ...base, ttlSeconds })).rejects.toThrow("ttlSeconds must be at most 86400");
+      await expect(buildPaymentRequest({ ...base, ttlSeconds })).rejects.toThrow("ttlSeconds must be at most 86400");
+      expect(() =>
+        initialize({
+          recipient: RECIPIENT,
+          chainId: 31_337,
+          merchantOrigin: "https://merchant.example",
+          confirmations: CONFIRMATIONS,
+          ttlSeconds,
+        }),
+      ).toThrow("ttlSeconds must be at most 86400");
+    }
+    for (const ttlSeconds of [0, -1, 1.5]) {
+      await expect(createPaymentRequest({ ...base, ttlSeconds })).rejects.toThrow("ttlSeconds must be a positive");
+    }
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_000_000));
+    const atCap = await createPaymentRequest({ ...base, ttlSeconds: MAX_PAYMENT_REQUEST_TTL_SECONDS });
+    const sdk = initialize({
+      recipient: RECIPIENT,
+      chainId: 31_337,
+      merchantOrigin: "https://merchant.example",
+      confirmations: CONFIRMATIONS,
+      ttlSeconds: MAX_PAYMENT_REQUEST_TTL_SECONDS,
+    });
+    const fromSdk = await sdk.createPaymentRequest({ amount: 10_000n, token: TOKEN });
+    vi.useRealTimers();
+    expect(atCap.expiry).toBe(1_000 + 86_400);
+    expect(fromSdk.expiry).toBe(1_000 + 86_400);
+  });
+
+  it("parses viewTag to one canonical uint16", () => {
+    // Numbers: the intent's wire form.
+    expect(viewTag(0, "tag")).toBe(0);
+    expect(viewTag(65_535, "tag")).toBe(65_535);
+    for (const rejected of [65_536, -1, 1.5, "5", "0x05", null]) {
+      expect(() => viewTag(rejected, "tag")).toThrow("tag");
+    }
+    // Strings only with { hex: true }, always read as hex (rs-core `send` returns a bare byte).
+    expect(viewTag("0a", "tag", { hex: true })).toBe(10);
+    expect(viewTag("0x0a", "tag", { hex: true })).toBe(10);
+    expect(viewTag("0X0A", "tag", { hex: true })).toBe(10);
+    expect(viewTag("10", "tag", { hex: true })).toBe(16);
+    expect(viewTag("ffff", "tag", { hex: true })).toBe(65_535);
+    expect(viewTag(10, "tag", { hex: true })).toBe(10);
+    for (const rejected of ["", "0x", "1ffff", "0x10000", "-1", "0xg1", " 0a"]) {
+      expect(() => viewTag(rejected, "tag", { hex: true })).toThrow("tag");
+    }
+  });
+
   it("creates payment requests from an initialized SDK client", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_000_000));
@@ -181,34 +204,6 @@ describe("payments", () => {
     expect(intent.expiry).toBe(2_000 + DEFAULT_PAYMENT_REQUEST_TTL_SECONDS);
   });
 
-  it("binds confirmations from init on sdk.verifyPayment", async () => {
-    const txHash = `0x${"ab".repeat(32)}` as Hex;
-    const getBlockNumber = vi.fn().mockResolvedValue(20n);
-    const sdk = initialize({
-      recipient: RECIPIENT,
-      chainId: 31_337,
-      merchantOrigin: "https://merchant.example",
-      confirmations: CONFIRMATIONS,
-    });
-
-    await expect(
-      sdk.verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "success",
-            blockNumber: 12n,
-            logs: [pendingLog(AGGREGATOR)],
-          }),
-          getBlockNumber,
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        txHash,
-      }),
-    ).resolves.toBe(false);
-    expect(getBlockNumber).toHaveBeenCalled();
-  });
-
   it("defaults omitted checkoutCompletePath and accepts a custom path", async () => {
     expect(
       parsePaymentIntent({
@@ -223,6 +218,26 @@ describe("payments", () => {
         expiry: 6,
       }).checkoutCompletePath,
     ).toBe("/checkout/complete");
+  });
+
+  it("returns buyers to the merchant's completion page with a receipt hint or a retry request", () => {
+    const intent = {
+      token: TOKEN,
+      amount: "1",
+      chainId: 1,
+      ownerHash: "2",
+      ephemeralKeyX: "3",
+      ephemeralKeyY: "4",
+      viewTag: 5,
+      merchantOrigin: "https://merchant.example",
+      checkoutCompletePath: "/orders/done",
+      expiry: 6,
+    };
+    const txHash = `0x${"ab".repeat(32)}` as Hex;
+
+    expect(buildCheckoutCompleteUrl(intent, txHash)).toBe(`https://merchant.example/orders/done#txHash=${txHash}`);
+    expect(buildCheckoutRetryUrl(intent)).toBe("https://merchant.example/orders/done#retry=3");
+    expect(() => buildCheckoutRetryUrl({ ...intent, checkoutCompletePath: "//evil.example/done" })).toThrow();
   });
 
   it("rejects removed and unknown intent fields", () => {
@@ -242,6 +257,62 @@ describe("payments", () => {
     ).toThrow("must not contain paymentId");
   });
 
+  it("range-checks numeric intent fields", async () => {
+    const valid = {
+      token: TOKEN,
+      amount: "1",
+      chainId: 1,
+      ownerHash: "2",
+      ephemeralKeyX: "3",
+      ephemeralKeyY: "4",
+      viewTag: 5,
+      merchantOrigin: "https://merchant.example",
+      expiry: 6,
+    };
+    const scalarField = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+    const baseField = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
+    const rejected: [string, Record<string, unknown>][] = [
+      ["intent.amount", { amount: "0" }],
+      ["intent.amount", { amount: (1n << 256n).toString() }],
+      ["intent.amount", { amount: "010" }],
+      ["intent.ownerHash", { ownerHash: "0" }],
+      ["intent.ownerHash", { ownerHash: scalarField.toString() }],
+      ["intent.ephemeralKeyX", { ephemeralKeyX: baseField.toString() }],
+      ["intent.ephemeralKeyY", { ephemeralKeyY: baseField.toString() }],
+      ["intent.viewTag", { viewTag: 65_536 }],
+      ["intent.viewTag", { viewTag: -1 }],
+      // The intent carries viewTag as a JSON number; the hex form rs-core returns is not accepted here.
+      ["intent.viewTag", { viewTag: "5" }],
+      ["intent.viewTag", { viewTag: "0x05" }],
+      ["intent.chainId", { chainId: 0 }],
+      ["intent.expiry", { expiry: 0 }],
+      ["intent.expiry", { expiry: 1.5 }],
+    ];
+    for (const [label, override] of rejected) {
+      expect(() => parsePaymentIntent({ ...valid, ...override })).toThrow(label);
+    }
+    // Upper bounds are exclusive; R coordinates may exceed the scalar field (they live in the base field).
+    expect(() =>
+      parsePaymentIntent({
+        ...valid,
+        amount: ((1n << 256n) - 1n).toString(),
+        ownerHash: (scalarField - 1n).toString(),
+        ephemeralKeyX: scalarField.toString(),
+        ephemeralKeyY: (baseField - 1n).toString(),
+        viewTag: 65_535,
+      }),
+    ).not.toThrow();
+    // Real requests always parse.
+    const intent = await createPaymentRequest({
+      recipient: RECIPIENT,
+      amount: 1n,
+      token: TOKEN,
+      chainId: 31_337,
+      merchantOrigin: "https://merchant.example",
+    });
+    expect(parsePaymentIntent(intent)).toEqual(intent);
+  });
+
   it("scans every PendingNotes slot and pins the emitting aggregator", () => {
     const receipt = { logs: [pendingLog(OTHER), pendingLog(AGGREGATOR)] };
     expect(findNoteInReceipt(receipt, [22n, 44n], AGGREGATOR)).toEqual({
@@ -249,165 +320,6 @@ describe("payments", () => {
       netAmount: 1_800n,
       token: 8n,
     });
-  });
-
-  it("returns true when the payment is confirmed with enough block confirmations", async () => {
-    const txHash = `0x${"ab".repeat(32)}` as Hex;
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "success",
-            blockNumber: 12n,
-            logs: [pendingLog(OTHER), pendingLog(AGGREGATOR)],
-          }),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash,
-      }),
-    ).resolves.toBe(true);
-  });
-
-  it("returns true when the note is batch-committed", async () => {
-    const txHash = `0x${"ac".repeat(32)}` as Hex;
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "success",
-            blockNumber: 12n,
-            logs: [pendingLog(AGGREGATOR)],
-          }),
-          getLogs: vi.fn().mockResolvedValue([committedLog(AGGREGATOR, [202n])]),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash,
-      }),
-    ).resolves.toBe(true);
-  });
-
-  it("returns false when the receipt contains PendingNotes for another ephemeral key", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "success",
-            blockNumber: 12n,
-            logs: [pendingLog(AGGREGATOR)],
-          }),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [99n, 99n],
-        confirmations: CONFIRMATIONS,
-        txHash: `0x${"cd".repeat(32)}`,
-      }),
-    ).resolves.toBe(false);
-  });
-
-  it("returns false when confirmations are insufficient", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "success",
-            blockNumber: 12n,
-            logs: [pendingLog(AGGREGATOR)],
-          }),
-          getBlockNumber: vi.fn().mockResolvedValue(20n),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash: `0x${"03".repeat(32)}`,
-      }),
-    ).resolves.toBe(false);
-  });
-
-  it("throws when the shield transaction reverted", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "reverted",
-            blockNumber: 12n,
-            logs: [],
-          }),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash: `0x${"ee".repeat(32)}`,
-      }),
-    ).rejects.toThrow("shield transaction reverted");
-  });
-
-  it("throws when the receipt is not a Curvy shield payment", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockResolvedValue({
-            status: "success",
-            blockNumber: 12n,
-            logs: [],
-          }),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash: `0x${"ef".repeat(32)}`,
-      }),
-    ).rejects.toThrow("transaction is not a valid Curvy shield payment");
-  });
-
-  it("throws when the transaction hash is unknown", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getTransactionReceipt: vi
-            .fn()
-            .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: `0x${"f0".repeat(32)}` as Hex })),
-          getTransaction: vi
-            .fn()
-            .mockRejectedValue(new TransactionNotFoundError({ hash: `0x${"f0".repeat(32)}` as Hex })),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash: `0x${"f0".repeat(32)}`,
-      }),
-    ).rejects.toThrow("transaction is not a valid Curvy shield payment");
-  });
-
-  it("throws when txHash is malformed", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({}),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-        txHash: "0x1234" as Hex,
-      }),
-    ).rejects.toThrow("txHash must be a 32-byte hex string");
-  });
-
-  it("returns true without txHash when the note is batch-committed", async () => {
-    await expect(
-      verifyPayment({
-        publicClient: receiptClient({
-          getLogs: vi
-            .fn()
-            .mockResolvedValueOnce([pendingLog(AGGREGATOR)])
-            .mockResolvedValueOnce([committedLog(AGGREGATOR, [202n])]),
-        }),
-        aggregatorAddress: AGGREGATOR,
-        ephemeralKey: [22n, 44n],
-        confirmations: CONFIRMATIONS,
-      }),
-    ).resolves.toBe(true);
   });
 
   it("rejects expired intents and signers", async () => {
@@ -429,5 +341,45 @@ describe("payments", () => {
     await expect(
       verifyPaymentIntent({ intent, signature }, { keySet, expectedChainId: 1, expectedToken: TOKEN, nowSeconds: 10 }),
     ).rejects.toThrow("expired");
+  });
+
+  it("refuses to sign or verify an intent that lives longer than 24 hours", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_000_000));
+    const signer = privateKeyToAccount(`0x${"33".repeat(32)}`);
+    const intent = {
+      token: TOKEN,
+      amount: "1",
+      chainId: 1,
+      ownerHash: "2",
+      ephemeralKeyX: "3",
+      ephemeralKeyY: "4",
+      viewTag: 5,
+      merchantOrigin: "https://merchant.example",
+      checkoutCompletePath: "/checkout/complete",
+      expiry: 1_000 + MAX_PAYMENT_REQUEST_TTL_SECONDS,
+    };
+    const sign = (value: typeof intent) => signPaymentIntent(value, (typedData) => signer.signTypedData(typedData));
+    await expect(sign(intent)).resolves.toMatchObject({ intent });
+    await expect(sign({ ...intent, expiry: intent.expiry + 1 })).rejects.toThrow(
+      "payment intent expiry must be at most 86400 seconds (24 hours) away",
+    );
+    await expect(sign({ ...intent, expiry: 1_000 + 365 * 86_400 })).rejects.toThrow("at most 86400 seconds");
+    vi.useRealTimers();
+
+    // A hand-signed intent (or one from an older SDK) is refused by the verifier, with 5 min of clock skew.
+    const keySet = buildMerchantKeySet([{ address: signer.address, notAfter: "2030-01-01T00:00:00.000Z" }]);
+    const verify = async (expiry: number) => {
+      const unchecked = { ...intent, expiry };
+      const signature = (await signer.signTypedData(buildPaymentIntentTypedData(unchecked))) as Hex;
+      return verifyPaymentIntent(
+        { intent: unchecked, signature },
+        { keySet, expectedChainId: 1, expectedToken: TOKEN, nowSeconds: 1_000 },
+      );
+    };
+    const withSkew = 1_000 + MAX_PAYMENT_REQUEST_TTL_SECONDS + 300;
+    await expect(verify(withSkew)).resolves.toMatchObject({ signer: signer.address });
+    await expect(verify(withSkew + 1)).rejects.toThrow("payment intent lifetime exceeds 24 hours");
+    await expect(verify(1_000 + 365 * 86_400)).rejects.toThrow("lifetime exceeds 24 hours");
   });
 });

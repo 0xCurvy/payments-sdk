@@ -1,9 +1,7 @@
-﻿export {
+export {
   findNoteInReceipt,
   type PredictPortalAddressParameters,
   predictPortalAddress,
-  type VerifyPaymentParameters,
-  verifyPayment,
 } from "./chain";
 export { aggregatorAbi, pendingNotesAbi, portalFactoryAbi, vaultAbi } from "./contracts";
 export {
@@ -26,9 +24,17 @@ export {
   type VerifyPaymentIntentParameters,
   verifyPaymentIntent,
 } from "./intent";
-export { buildMerchantKeySet, type MerchantSignerInput, parseMerchantKeySet } from "./merchant/keys";
+export {
+  buildMerchantKeySet,
+  encodeReceivingKeys,
+  type MerchantSignerInput,
+  parseMerchantKeySet,
+  parseReceivingKeys,
+  RECEIVING_KEYS_VERSION,
+} from "./merchant/keys";
 export {
   buildCheckoutCompleteUrl,
+  buildCheckoutRetryUrl,
   buildCheckoutUrl,
   decodePaymentIntentFragment,
   encodePaymentIntentFragment,
@@ -42,8 +48,11 @@ export type {
   PaymentReceipt,
   PaymentReceiptClient,
   PaymentRecipient,
-  PaymentVerifyClient,
   PublishedSigner,
   SignedPaymentIntent,
 } from "./types";
-export { DEFAULT_CHECKOUT_COMPLETE_PATH, DEFAULT_PAYMENT_REQUEST_TTL_SECONDS } from "./utils/validation";
+export {
+  DEFAULT_CHECKOUT_COMPLETE_PATH,
+  DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
+  MAX_PAYMENT_REQUEST_TTL_SECONDS,
+} from "./utils/validation";

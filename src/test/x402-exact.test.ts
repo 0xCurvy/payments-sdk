@@ -16,7 +16,7 @@ import {
   zeroHash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { pendingNotesAbi } from "../contracts";
+import { encodeReceivingKeys } from "../merchant/keys";
 import {
   CURVY_BROADCASTER_URL,
   CURVY_FACILITATOR_URL,
@@ -50,6 +50,7 @@ import {
   type X402Merchant,
   type X402PaymentEvent,
 } from "../x402/merchant";
+import { computeNoteId, pendingNotesLog, shieldPortalDeployedLog } from "./verifyPaymentFixtures";
 
 const TOKEN = getAddress("0x0000000000000000000000000000000000000003");
 const AGGREGATOR = getAddress("0x0000000000000000000000000000000000000004");
@@ -73,32 +74,28 @@ function portalFor(ownerHash: bigint, recovery: string) {
   return getAddress(`0x${keccak256(toHex(`${ownerHash}:${recovery.toLowerCase()}`)).slice(-40)}`);
 }
 
-function pendingLog(
-  ephemeralKey: readonly [string, string],
-  noteId = 77n,
+/**
+ * A shield receipt's logs as the chain emits them for this note: the aggregator's PendingNotes slot, whose note
+ * id commits to the owner, token and net amount (so the hardened check can match it), and the portal factory's
+ * ShieldPortalDeployed, which makes the portal fee part of the expected net amount (10 000 - 10 - 100 - 50).
+ */
+async function shieldLogs(
+  note: { ownerHash: string; ephemeralKey: readonly [string, string]; viewTag: number },
+  transactionHash: Hex = SHIELD_TX,
   netAmount = 9_840n,
-): TransactionReceipt["logs"][number] {
-  return {
-    address: AGGREGATOR,
-    blockHash: zeroHash,
-    blockNumber: 12n,
-    data: encodeAbiParameters(
-      [
-        { type: "uint256[]" },
-        { type: "uint256[][2]" },
-        { type: "uint16[]" },
-        { type: "uint256[]" },
-        { type: "uint256[]" },
-        { type: "bool[]" },
-      ],
-      [[noteId], [[BigInt(ephemeralKey[0])], [BigInt(ephemeralKey[1])]], [1], [3n], [netAmount], [false]],
+): Promise<TransactionReceipt["logs"]> {
+  const location = { blockNumber: 12n, transactionHash };
+  const ephemeralKey = [BigInt(note.ephemeralKey[0]), BigInt(note.ephemeralKey[1])] as const;
+  const noteId = await computeNoteId(note.ownerHash, netAmount, 3n);
+
+  return [
+    pendingNotesLog(
+      AGGREGATOR,
+      [{ noteId, ephemeralKey, viewTag: note.viewTag, token: 3n, amount: netAmount }],
+      location,
     ),
-    logIndex: 0,
-    removed: false,
-    topics: encodeEventTopics({ abi: pendingNotesAbi, eventName: "PendingNotes" }) as [Hex, ...Hex[]],
-    transactionHash: SHIELD_TX,
-    transactionIndex: 0,
-  };
+    shieldPortalDeployedLog(PORTAL_FACTORY, note.ownerHash, { ...location, logIndex: 1 }),
+  ] as TransactionReceipt["logs"];
 }
 
 function supportedResponse(
@@ -191,6 +188,10 @@ function harness(supported = supportedResponse()): Harness {
         case "balanceOf":
           // Portals are funded unless a test says otherwise.
           return PRICE;
+        case "curvyVault":
+          return VAULT;
+        case "portalFactory":
+          return PORTAL_FACTORY;
         case "depositFee":
           return 10n;
         case "perTokenGasFees":
@@ -342,13 +343,14 @@ describe("createX402Merchant", () => {
     expect(shielded.shieldTxHash).toBe(SHIELD_TX);
     expect(h.broadcaster.registerPayment).toHaveBeenCalledTimes(1);
 
-    // The receipt carries someone else's note only: still shielded, not confirmed.
-    h.receipt.logs = [pendingLog(["11", "22"])];
-    expect((await merchant.confirm(paid.payment.payTo)).status).toBe("shielded");
-    h.receipt.logs = [pendingLog(paid.payment.note.ephemeralKey)];
+    // A shield transaction that carries someone else's note only is refused, and the payment stays shielded.
+    h.receipt.logs = await shieldLogs({ ownerHash: "1", ephemeralKey: ["11", "22"], viewTag: 1 });
+    await expect(merchant.confirm(paid.payment.payTo)).rejects.toThrow("does not pay this request");
+    expect((await merchant.getPayment(paid.payment.payTo))?.status).toBe("shielded");
+    h.receipt.logs = await shieldLogs(paid.payment.note);
     const confirmed = await merchant.confirm(paid.payment.payTo);
     expect(confirmed.status).toBe("confirmed");
-    expect(confirmed.noteId).toBe("77");
+    expect(confirmed.noteId).toBe((await computeNoteId(paid.payment.note.ownerHash, 9_840n, 3n)).toString());
     expect(confirmed.netAmount).toBe("9840");
     expect(h.events.map((event) => event.type)).toEqual(["challenged", "settled", "shielded", "confirmed"]);
 
@@ -595,6 +597,26 @@ describe("createX402Merchant", () => {
   });
 });
 
+describe("createX402Merchant: receiving keys", () => {
+  it("takes the one receiving-keys value from the web app, or the same keys as three strings", async () => {
+    const h = harness();
+    const merchant = await merchantFor(h, { recipient: undefined, receivingKeys: encodeReceivingKeys(RECIPIENT) });
+    const result = await merchant.charge(request(), { price: PRICE });
+    expect(result.status).toBe("payment-required");
+  });
+
+  it("refuses both, neither or a damaged value before calling any service", async () => {
+    const h = harness();
+    const exactlyOne = "pass exactly one of receivingKeys (preferred) or recipient";
+    await expect(merchantFor(h, { receivingKeys: encodeReceivingKeys(RECIPIENT) })).rejects.toThrow(exactlyOne);
+    await expect(merchantFor(h, { recipient: undefined })).rejects.toThrow(exactlyOne);
+    await expect(
+      merchantFor(h, { recipient: undefined, receivingKeys: `${encodeReceivingKeys(RECIPIENT).slice(0, -1)}A` }),
+    ).rejects.toThrow("receiving keys");
+    expect(h.broadcaster.network).not.toHaveBeenCalled();
+  });
+});
+
 describe("createX402Merchant: broadcaster minimum", () => {
   it("raises the minimum price to the broadcaster's USD floor for a USD token", async () => {
     const h = harness();
@@ -755,7 +777,7 @@ describe("createX402Merchant: failure modes and stores", () => {
     const h = harness();
     const merchant = await merchantFor(h, { autoShield: true, confirmPollMs: 5, confirmTimeoutMs: 5_000 });
     const { challenge, header } = await challengeAndHeader(merchant);
-    h.receipt.logs = [pendingLog(challenge.payment.note.ephemeralKey)];
+    h.receipt.logs = await shieldLogs(challenge.payment.note);
     h.portals.set(challenge.payment.payTo.toLowerCase(), { state: "shielded", txHash: SHIELD_TX });
     h.publicClient.getTransactionReceipt.mockRejectedValueOnce(new Error("fetch failed"));
     const paid = await merchant.charge(request({ [PAYMENT_SIGNATURE_HEADER]: header }), { price: PRICE });
@@ -910,10 +932,11 @@ describe("createX402Merchant: broadcaster mode", () => {
     expect(shielded.shieldTxHash).toBe(SHIELD_VIA_BROADCASTER);
     expect(b.client.registerPayment).toHaveBeenCalledTimes(1);
 
+    const logs = await shieldLogs(paid.payment.note, SHIELD_VIA_BROADCASTER);
     h.publicClient.getTransactionReceipt.mockImplementation(async () => ({
       status: "success",
       blockNumber: 12n,
-      logs: [pendingLog(paid.payment.note.ephemeralKey)],
+      logs,
     }));
     expect((await merchant.confirm(payTo)).status).toBe("confirmed");
   });

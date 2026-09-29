@@ -1,31 +1,56 @@
-﻿import type { Address } from "viem";
-import { type VerifyPaymentParameters, verifyPayment as verifyPaymentOnChain } from "../chain/verifyPayment";
-import type { PaymentIntent, PaymentRecipient } from "../types";
-import { DEFAULT_CHECKOUT_COMPLETE_PATH, DEFAULT_PAYMENT_REQUEST_TTL_SECONDS } from "../utils/validation";
+import type { Address } from "viem";
+import type { PaymentIntent } from "../types";
+import {
+  DEFAULT_CHECKOUT_COMPLETE_PATH,
+  DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
+  paymentRequestTtlSeconds,
+} from "../utils/validation";
 import { buildPaymentRequest } from "./createPaymentRequest";
+import { type RecipientParameters, resolveRecipient } from "./internal/resolveRecipient";
+import {
+  type PaidWhen,
+  type PaymentVerification,
+  type VerifyPaymentParameters,
+  verifyPayment as verifyStoredPayment,
+} from "./verifyPayment";
 
-export interface PaymentSDKConfig {
-  recipient: PaymentRecipient;
+/**
+ * `receivingKeys` (preferred) is the one value from the web app's Payments setup; `recipient` is the same
+ * public keys as three strings. Pass exactly one.
+ */
+export type PaymentSDKConfig = RecipientParameters & {
   chainId: number;
   merchantOrigin: string;
   confirmations: number;
+  /**
+   * When a verified note counts as `paid`: `"shielded"` (default) once it has `confirmations`
+   * blocks, or `"committed"` once it is also in a batch commit and spendable. See {@link PaidWhen}.
+   */
+  paidWhen?: PaidWhen;
+  /** Request lifetime: a positive safe integer of at most 86400 (24 h). Default 600. */
   ttlSeconds?: number;
   checkoutCompletePath?: string;
-}
+};
 
-export type BoundVerifyPaymentParameters = Omit<VerifyPaymentParameters, "confirmations">;
+export type BoundVerifyPaymentParameters = Omit<VerifyPaymentParameters, "confirmations" | "paidWhen">;
 
 export interface PaymentSDK {
   createPaymentRequest(parameters: { amount: bigint; token: Address }): Promise<PaymentIntent>;
-  verifyPayment(parameters: BoundVerifyPaymentParameters): Promise<boolean>;
+  /** `verifyPayment` with `confirmations` and `paidWhen` bound from `initialize`. */
+  verifyPayment(parameters: BoundVerifyPaymentParameters): Promise<PaymentVerification>;
 }
 
 export function initialize(config: PaymentSDKConfig): PaymentSDK {
+  const recipient = resolveRecipient(config);
   if (!Number.isSafeInteger(config.chainId) || config.chainId <= 0) {
     throw new Error("chainId must be a positive safe integer");
   }
   if (!Number.isSafeInteger(config.confirmations) || config.confirmations <= 0) {
     throw new Error("confirmations must be a positive safe integer");
+  }
+  const resolvedPaidWhen = config.paidWhen === undefined ? "shielded" : config.paidWhen;
+  if (resolvedPaidWhen !== "shielded" && resolvedPaidWhen !== "committed") {
+    throw new Error('paidWhen must be "shielded" or "committed"');
   }
 
   const resolvedMerchantOrigin = (() => {
@@ -39,10 +64,7 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
     return config.merchantOrigin;
   })();
 
-  const resolvedTtlSeconds = config.ttlSeconds ?? DEFAULT_PAYMENT_REQUEST_TTL_SECONDS;
-  if (!Number.isSafeInteger(resolvedTtlSeconds) || resolvedTtlSeconds <= 0) {
-    throw new Error("ttlSeconds must be a positive safe integer");
-  }
+  const resolvedTtlSeconds = paymentRequestTtlSeconds(config.ttlSeconds ?? DEFAULT_PAYMENT_REQUEST_TTL_SECONDS);
 
   const resolvedCheckoutCompletePath = (() => {
     const value = config.checkoutCompletePath;
@@ -70,7 +92,7 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
   return {
     createPaymentRequest(parameters) {
       return buildPaymentRequest({
-        recipient: config.recipient,
+        recipient,
         amount: parameters.amount,
         token: parameters.token,
         chainId: config.chainId,
@@ -81,7 +103,7 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
       });
     },
     verifyPayment(parameters) {
-      return verifyPaymentOnChain({ ...parameters, confirmations: config.confirmations });
+      return verifyStoredPayment({ ...parameters, confirmations: config.confirmations, paidWhen: resolvedPaidWhen });
     },
   };
 }
