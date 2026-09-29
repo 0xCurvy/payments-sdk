@@ -3,11 +3,7 @@ import { isAddressEqual, parseEventLogs } from "viem/utils";
 import { pendingNotesAbi } from "../../contracts";
 import { findPendingNote } from "./findPendingNote";
 
-export function noteIdInCommittedLogs(
-  noteId: bigint,
-  logs: Log[],
-  aggregatorAddress: Address,
-): boolean {
+export function noteIdInCommittedLogs(noteId: bigint, logs: Log[], aggregatorAddress: Address): boolean {
   const events = parseEventLogs({ abi: pendingNotesAbi, eventName: "CommittedNotes", logs, strict: true });
   return events.some(
     (log) => isAddressEqual(log.address, aggregatorAddress) && log.args.noteIds.some((id) => id === noteId),

@@ -4,8 +4,8 @@
   getAddress,
   type Hex,
   TransactionNotFoundError,
-  TransactionReceiptNotFoundError,
   type TransactionReceipt,
+  TransactionReceiptNotFoundError,
   zeroHash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -13,14 +13,14 @@ import {
   buildCheckoutUrl,
   buildMerchantKeySet,
   buildPaymentIntentTypedData,
+  DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
   decodePaymentIntentFragment,
   findNoteInReceipt,
   parsePaymentIntent,
   pendingNotesAbi,
   signPaymentIntent,
-  verifyPaymentIntent,
   verifyPayment,
-  DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
+  verifyPaymentIntent,
 } from "../index";
 import { createPaymentRequest, initialize } from "../merchant";
 
@@ -367,8 +367,12 @@ describe("payments", () => {
     await expect(
       verifyPayment({
         publicClient: receiptClient({
-          getTransactionReceipt: vi.fn().mockRejectedValue(new TransactionReceiptNotFoundError({ hash: `0x${"f0".repeat(32)}` as Hex })),
-          getTransaction: vi.fn().mockRejectedValue(new TransactionNotFoundError({ hash: `0x${"f0".repeat(32)}` as Hex })),
+          getTransactionReceipt: vi
+            .fn()
+            .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: `0x${"f0".repeat(32)}` as Hex })),
+          getTransaction: vi
+            .fn()
+            .mockRejectedValue(new TransactionNotFoundError({ hash: `0x${"f0".repeat(32)}` as Hex })),
         }),
         aggregatorAddress: AGGREGATOR,
         ephemeralKey: [22n, 44n],

@@ -1,10 +1,7 @@
 ﻿import type { Address } from "viem";
+import { type VerifyPaymentParameters, verifyPayment as verifyPaymentOnChain } from "../chain/verifyPayment";
 import type { PaymentIntent, PaymentRecipient } from "../types";
-import {
-  DEFAULT_CHECKOUT_COMPLETE_PATH,
-  DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
-} from "../utils/validation";
-import { verifyPayment as verifyPaymentOnChain, type VerifyPaymentParameters } from "../chain/verifyPayment";
+import { DEFAULT_CHECKOUT_COMPLETE_PATH, DEFAULT_PAYMENT_REQUEST_TTL_SECONDS } from "../utils/validation";
 import { buildPaymentRequest } from "./createPaymentRequest";
 
 export interface PaymentSDKConfig {
@@ -79,9 +76,7 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
         chainId: config.chainId,
         merchantOrigin: resolvedMerchantOrigin,
         checkoutCompletePath:
-          resolvedCheckoutCompletePath === DEFAULT_CHECKOUT_COMPLETE_PATH
-            ? undefined
-            : resolvedCheckoutCompletePath,
+          resolvedCheckoutCompletePath === DEFAULT_CHECKOUT_COMPLETE_PATH ? undefined : resolvedCheckoutCompletePath,
         ttlSeconds: resolvedTtlSeconds,
       });
     },

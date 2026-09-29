@@ -7,6 +7,15 @@
 } from "./chain";
 export { aggregatorAbi, pendingNotesAbi, portalFactoryAbi, vaultAbi } from "./contracts";
 export {
+  type ChainFees,
+  type FeeBreakdown,
+  feeBreakdown,
+  minimumPaymentAmount,
+  type PaymentRail,
+  quotePayment,
+  readChainFees,
+} from "./economics";
+export {
   buildPaymentIntentTypedData,
   type PaymentIntentSigner,
   parsePaymentIntent,

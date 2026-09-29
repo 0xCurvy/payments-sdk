@@ -1,23 +1,16 @@
 /**
  * Unit coverage for the x402 exact merchant integrator path:
- * createPaymentRequest → predictPortalAddress(facilitator recovery) → verifyPayment / findNoteInReceipt.
+ * createPaymentRequest → predictPortalAddress(explicit recovery address) → verifyPayment / findNoteInReceipt.
  * No Express, @x402/*, or facilitator HTTP.
  */
-import {
-  encodeAbiParameters,
-  encodeEventTopics,
-  getAddress,
-  type Hex,
-  type TransactionReceipt,
-  zeroHash,
-} from "viem";
+import { encodeAbiParameters, encodeEventTopics, getAddress, type Hex, type TransactionReceipt, zeroHash } from "viem";
 import { findNoteInReceipt, pendingNotesAbi, predictPortalAddress, verifyPayment } from "../index";
 import { createPaymentRequest } from "../merchant";
 
 const TOKEN = getAddress("0x0000000000000000000000000000000000000003");
 const AGGREGATOR = getAddress("0x0000000000000000000000000000000000000004");
 const PORTAL_FACTORY = getAddress("0x0000000000000000000000000000000000000006");
-/** Anvil #0 — facilitator submitter / CREATE2 recovery on the exact rail. */
+/** Anvil #0, used as an explicit recovery address. */
 const FACILITATOR_SUBMITTER = getAddress("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 const PREDICTED_PAY_TO = getAddress("0x00000000000000000000000000000000000000A1");
 const CONFIRMATIONS = 12;
@@ -95,7 +88,7 @@ describe("x402 merchant payments-sdk helpers", () => {
     expect(intent.checkoutCompletePath).toBe("/checkout/complete");
   });
 
-  it("predicts payTo with facilitator submitter as recovery", async () => {
+  it("predicts payTo with an explicit recovery address", async () => {
     const intent = await createPaymentRequest({
       recipient: RECIPIENT,
       amount: PRICE,

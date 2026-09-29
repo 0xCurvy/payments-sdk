@@ -45,8 +45,7 @@ export type PaymentReceipt = Pick<TransactionReceipt, "logs">;
 
 export interface PaymentReadClient extends Pick<PublicClient, "readContract"> {}
 
-export interface PaymentReceiptClient
-  extends Pick<PublicClient, "getTransaction" | "getTransactionReceipt"> {}
+export interface PaymentReceiptClient extends Pick<PublicClient, "getTransaction" | "getTransactionReceipt"> {}
 
 export interface PaymentVerifyClient
   extends Pick<PublicClient, "getTransaction" | "getTransactionReceipt" | "getBlockNumber" | "getLogs"> {}

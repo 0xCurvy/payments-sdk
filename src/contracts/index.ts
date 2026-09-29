@@ -1,4 +1,4 @@
-﻿export {
+export {
   aggregatorAlphaV2Abi as aggregatorAbi,
   aggregatorAlphaV2Abi as pendingNotesAbi,
 } from "./abi/aggregator-alpha-v2";

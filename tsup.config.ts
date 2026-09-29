@@ -4,10 +4,13 @@ const entries = {
   index: "src/index.ts",
   "chain/index": "src/chain/index.ts",
   "contracts/index": "src/contracts/index.ts",
+  "economics/index": "src/economics/index.ts",
   "intent/index": "src/intent/index.ts",
   "merchant/index": "src/merchant/index.ts",
   "merchant/keys/index": "src/merchant/keys/index.ts",
   "transport/index": "src/transport/index.ts",
+  "x402/index": "src/x402/index.ts",
+  "x402/merchant/index": "src/x402/merchant/index.ts",
 };
 
 export default defineConfig(() => {

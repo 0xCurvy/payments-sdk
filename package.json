@@ -61,6 +61,16 @@
         "default": "./dist/_cjs/contracts/index.cjs"
       }
     },
+    "./economics": {
+      "import": {
+        "types": "./dist/_types/economics/index.d.ts",
+        "default": "./dist/_esm/economics/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/economics/index.d.cts",
+        "default": "./dist/_cjs/economics/index.cjs"
+      }
+    },
     "./merchant": {
       "import": {
         "types": "./dist/_types/merchant/index.d.ts",
@@ -101,6 +111,26 @@
         "default": "./dist/_cjs/transport/index.cjs"
       }
     },
+    "./x402": {
+      "import": {
+        "types": "./dist/_types/x402/index.d.ts",
+        "default": "./dist/_esm/x402/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/x402/index.d.cts",
+        "default": "./dist/_cjs/x402/index.cjs"
+      }
+    },
+    "./x402/merchant": {
+      "import": {
+        "types": "./dist/_types/x402/merchant/index.d.ts",
+        "default": "./dist/_esm/x402/merchant/index.js"
+      },
+      "require": {
+        "types": "./dist/_types/x402/merchant/index.d.cts",
+        "default": "./dist/_cjs/x402/merchant/index.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -111,15 +141,16 @@
     "watch": "tsup --watch",
     "clean": "rimraf dist .turbo",
     "typecheck": "tsc --noEmit",
-    "check": "biome check src tsup.config.ts vitest.config.ts",
-    "check:fix": "biome check --write src tsup.config.ts vitest.config.ts",
-    "format": "biome format --write src tsup.config.ts vitest.config.ts",
-    "lint": "biome lint src tsup.config.ts vitest.config.ts",
-    "lint:fix": "biome lint --write src tsup.config.ts vitest.config.ts",
+    "check": "biome check src tsup.config.ts vitest.config.ts vitest.e2e.config.ts",
+    "check:fix": "biome check --write src tsup.config.ts vitest.config.ts vitest.e2e.config.ts",
+    "format": "biome format --write src tsup.config.ts vitest.config.ts vitest.e2e.config.ts",
+    "lint": "biome lint src tsup.config.ts vitest.config.ts vitest.e2e.config.ts",
+    "lint:fix": "biome lint --write src tsup.config.ts vitest.config.ts vitest.e2e.config.ts",
     "test": "vitest run src",
     "test:build": "node scripts/test-build.mjs",
     "prepublishOnly": "pnpm run test:build",
-    "prepare": "node scripts/prepare.mjs"
+    "prepare": "node scripts/prepare.mjs",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
     "viem": "^2.50.4"
@@ -136,6 +167,9 @@
     "@0xcurvy/rs-core-wasm": "0.1.0-rc.4",
     "@arethetypeswrong/cli": "^0.18.3",
     "@types/node": "catalog:",
+    "@x402/core": "2.22.0",
+    "@x402/evm": "2.22.0",
+    "@x402/fetch": "2.22.0",
     "publint": "^0.3.21",
     "rimraf": "^6.0.1",
     "tsup": "8.5.0",
