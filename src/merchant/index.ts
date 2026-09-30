@@ -1,4 +1,4 @@
-export {
+﻿export {
   type BuildPaymentRequestParameters,
   buildPaymentRequest,
   type CreatePaymentRequestParameters,
@@ -9,6 +9,7 @@ export type { RecipientParameters } from "./internal/resolveRecipient";
 export {
   buildMerchantKeySet,
   encodeReceivingKeys,
+  type MerchantKeySetOptions,
   type MerchantSignerInput,
   parseMerchantKeySet,
   parseReceivingKeys,

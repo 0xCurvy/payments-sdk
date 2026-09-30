@@ -65,7 +65,7 @@ const sdk = initialize({
 });
 
 const fromBlock = await publicClient.getBlockNumber();
-const request = await sdk.createPaymentRequest({ amount, token });
+const request = await sdk.createPaymentRequest({ amount, token, description: "Order #1048 · Blue hour print" });
 const payment = await signPaymentIntent(request, (typedData) => merchantSigner.signTypedData(typedData));
 // One opaque value per attempt, in your database; never only a cookie.
 await saveAttempt({ orderId, record: serializePaymentRecord({ payment, fromBlock, verification: null }) });
@@ -80,7 +80,7 @@ const checkoutUrl = buildCheckoutUrl(process.env.CHECKOUT_URL!, payment); // e.g
 - The rest is base64url without padding of `CRK`, the six 32-byte big-endian coordinates and a 4-byte checksum (the first 4 bytes of SHA-256 over the version digits, `CRK` and the keys). The checksum refuses typos and cut-off copies, and covers the version digits.
 - `parseReceivingKeys` also checks that each key is a point on its curve, and returns `{ S, V, babyJubjubPublicKey }` as decimal `x.y` strings. `initialize`, `createPaymentRequest`, `buildPaymentRequest` and `createX402Merchant` take exactly one of `receivingKeys` (preferred) or that `recipient` object.
 
-Publish your signer addresses with `buildMerchantKeySet` at `{merchantOrigin}/.well-known/curvy-payments.json`. The hosted checkout fetches that file from the buyer's browser, uncached, and verifies the signed request against it before it shows anything; serve it over `https:` from a publicly reachable host, without redirects. After adding a new signer, wait until every cached copy of the file lists it before signing with it. A KMS, HSM or MPC secp256k1 key works through a small adapter passed to `signPaymentIntent` (tested recipe in the docs, "Signing with a KMS or HSM").
+Publish your signer addresses with `buildMerchantKeySet` at `{merchantOrigin}/.well-known/curvy-payments.json`; `buildMerchantKeySet(signers, { name: "Overprint", icon: "/curvy-icon.png" })` also gives the name checkout shows for your shop, next to your domain (at most 60 characters of plain text), and the square PNG or WebP icon beside it (an absolute path on the same origin). The hosted checkout fetches that file from the buyer's browser, uncached, and verifies the signed request against it before it shows anything; serve it over `https:` from a publicly reachable host, without redirects. After adding a new signer, wait until every cached copy of the file lists it before signing with it. A KMS, HSM or MPC secp256k1 key works through a small adapter passed to `signPaymentIntent` (tested recipe in the docs, "Signing with a KMS or HSM").
 
 The SDK does not ship route handlers yet: the merchant writes the key-file route, the completion page and the settlement route. Keep each a thin handler over these calls and keep them up while payments are in progress, so a later release can supply them and add a route the checkout calls during payment.
 
@@ -148,6 +148,10 @@ return Response.json(data, { headers: result.headers });                       /
 ```
 
 `charge()` issues the 402 with a fresh one-time `payTo` and offers two schemes on it: `exact`, where the payer signs an EIP-3009 authorization that the facilitator submits, and `curvy-transfer`, where the payer sends a plain ERC-20 transfer itself and presents the transaction hash. With `facilitator: false` only `curvy-transfer` is offered. It resolves `paid` only once the portal actually holds the amount, then registers the portal with the broadcaster, which screens, deploys and shields it, and confirms your payment reference on chain in the background. Every `payTo` is derived with `recovery = NO_RECOVERY_ADDRESS` unless you set `recovery`, so funds in a portal the broadcaster never shields are lost for good. Agents pay with any x402 client (`exact`), or with `createX402Payer` from `@0xcurvy/payments-sdk/x402` (both schemes). Docs: [x402 and the Payments SDK](https://docs.curvy.box/sdk/payments/x402), [Payments SDK](https://docs.curvy.box/sdk/payments/).
+
+## Payment descriptions
+
+`createPaymentRequest` takes an optional `description` (at most 120 characters of plain text: no control or text-direction characters, no leading or trailing spaces). Checkout shows it under your shop's name and prints it on the buyer's receipt. It is signed with the payment as a `DescribedPaymentIntent`, a separate EIP-712 type, so it can't be changed, added or removed on the way. Intents without one are signed exactly as before. The description travels in the checkout link's fragment and is not part of what checkout registers with Curvy's payment service.
 
 ## Breaking changes since 0.1.2
 

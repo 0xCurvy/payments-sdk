@@ -1,4 +1,9 @@
-export { buildPaymentIntentTypedData, paymentIntentTypes } from "./buildPaymentIntentTypedData";
+export {
+  buildPaymentIntentTypedData,
+  describedPaymentIntentTypes,
+  type PaymentIntentTypedData,
+  paymentIntentTypes,
+} from "./buildPaymentIntentTypedData";
 export { parsePaymentIntent } from "./parsePaymentIntent";
 export { parseSignedPaymentIntent } from "./parseSignedPaymentIntent";
 export { type PaymentIntentSigner, signPaymentIntent } from "./signPaymentIntent";

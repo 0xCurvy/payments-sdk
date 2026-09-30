@@ -1,4 +1,4 @@
-import type { Address } from "viem";
+﻿import type { Address } from "viem";
 import { parsePaymentIntent } from "../intent/parsePaymentIntent";
 import type { PaymentIntent } from "../types";
 import { DEFAULT_PAYMENT_REQUEST_TTL_SECONDS, paymentRequestTtlSeconds } from "../utils/validation";
@@ -11,6 +11,8 @@ export type BuildPaymentRequestParameters = RecipientParameters & {
   chainId: number;
   merchantOrigin: string;
   checkoutCompletePath?: string;
+  /** What the buyer is paying for, shown at checkout and on their receipt (at most 120 characters). */
+  description?: string;
   /** Request lifetime: a positive safe integer of at most 86400 (24 h). */
   ttlSeconds: number;
 };
@@ -21,6 +23,8 @@ export type CreatePaymentRequestParameters = RecipientParameters & {
   chainId: number;
   merchantOrigin: string;
   checkoutCompletePath?: string;
+  /** What the buyer is paying for, shown at checkout and on their receipt (at most 120 characters). */
+  description?: string;
   /** Request lifetime: a positive safe integer of at most 86400 (24 h). Default 600. */
   ttlSeconds?: number;
 };
@@ -45,6 +49,7 @@ export async function buildPaymentRequest(parameters: BuildPaymentRequestParamet
     merchantOrigin: parameters.merchantOrigin,
     ...(parameters.checkoutCompletePath === undefined ? {} : { checkoutCompletePath: parameters.checkoutCompletePath }),
     expiry,
+    ...(parameters.description === undefined ? {} : { description: parameters.description }),
   });
 }
 

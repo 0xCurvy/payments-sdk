@@ -1,10 +1,10 @@
 import type { Hex } from "viem";
 import type { PaymentIntent, SignedPaymentIntent } from "../types";
 import { MAX_PAYMENT_REQUEST_TTL_SECONDS, signature } from "../utils/validation";
-import { buildPaymentIntentTypedData } from "./buildPaymentIntentTypedData";
+import { buildPaymentIntentTypedData, type PaymentIntentTypedData } from "./buildPaymentIntentTypedData";
 import { parsePaymentIntent } from "./parsePaymentIntent";
 
-export type PaymentIntentSigner = (typedData: ReturnType<typeof buildPaymentIntentTypedData>) => Promise<Hex>;
+export type PaymentIntentSigner = (typedData: PaymentIntentTypedData) => Promise<Hex>;
 
 /**
  * Sign an intent through an injected wallet, HSM, or KMS adapter. Refuses an intent whose expiry is more than

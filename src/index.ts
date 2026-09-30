@@ -1,4 +1,4 @@
-export {
+﻿export {
   findNoteInReceipt,
   type PredictPortalAddressParameters,
   predictPortalAddress,
@@ -15,7 +15,9 @@ export {
 } from "./economics";
 export {
   buildPaymentIntentTypedData,
+  describedPaymentIntentTypes,
   type PaymentIntentSigner,
+  type PaymentIntentTypedData,
   parsePaymentIntent,
   parseSignedPaymentIntent,
   paymentIntentTypes,
@@ -27,6 +29,7 @@ export {
 export {
   buildMerchantKeySet,
   encodeReceivingKeys,
+  type MerchantKeySetOptions,
   type MerchantSignerInput,
   parseMerchantKeySet,
   parseReceivingKeys,
@@ -54,5 +57,8 @@ export type {
 export {
   DEFAULT_CHECKOUT_COMPLETE_PATH,
   DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
+  MAX_MERCHANT_ICON_PATH_LENGTH,
+  MAX_MERCHANT_NAME_LENGTH,
+  MAX_PAYMENT_DESCRIPTION_LENGTH,
   MAX_PAYMENT_REQUEST_TTL_SECONDS,
 } from "./utils/validation";

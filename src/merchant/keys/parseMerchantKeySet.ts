@@ -1,10 +1,18 @@
 import type { MerchantKeySet, PublishedSigner } from "../../types";
-import { address, exactKeys, record, string } from "../../utils/validation";
+import {
+  address,
+  exactKeys,
+  merchantIconPath,
+  merchantName,
+  record,
+  requiredAndOptionalKeys,
+  string,
+} from "../../utils/validation";
 
 /** Parse and canonicalize a merchant's published signer set. */
 export function parseMerchantKeySet(value: unknown): MerchantKeySet {
   const input = record(value, "merchant key set");
-  exactKeys(input, ["version", "signers"], "merchant key set");
+  requiredAndOptionalKeys(input, ["version", "signers"], ["icon", "name"], "merchant key set");
   if (input.version !== 1) throw new Error("merchant key set version must be 1");
   if (!Array.isArray(input.signers)) throw new Error("merchant key set signers must be an array");
   const signers = input.signers.map((value, index): PublishedSigner => {
@@ -20,5 +28,10 @@ export function parseMerchantKeySet(value: unknown): MerchantKeySet {
       notAfter,
     };
   });
-  return { version: 1, signers };
+  return {
+    version: 1,
+    signers,
+    ...(input.icon === undefined ? {} : { icon: merchantIconPath(input.icon, "merchant key set icon") }),
+    ...(input.name === undefined ? {} : { name: merchantName(input.name, "merchant key set name") }),
+  };
 }

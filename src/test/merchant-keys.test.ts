@@ -9,6 +9,7 @@ import {
   buildPaymentIntentTypedData,
   encodeReceivingKeys,
   MAX_PAYMENT_REQUEST_TTL_SECONDS,
+  parseMerchantKeySet,
   parseReceivingKeys,
   RECEIVING_KEYS_VERSION,
   verifyPaymentIntent,
@@ -105,5 +106,57 @@ describe("payment intent lifetime", () => {
 
     await expect(verify(now + MAX_PAYMENT_REQUEST_TTL_SECONDS)).resolves.toMatchObject({ signer: address });
     await expect(verify(now + 2 * MAX_PAYMENT_REQUEST_TTL_SECONDS)).rejects.toThrow("lifetime exceeds 24 hours");
+  });
+});
+
+describe("merchant key set icon", () => {
+  const signer = {
+    address: getAddress("0x0000000000000000000000000000000000000001"),
+    notAfter: "2030-01-01T00:00:00.000Z",
+  };
+  const keySet = (icon: unknown) =>
+    parseMerchantKeySet({ version: 1, signers: [{ ...signer, alg: "eip712-secp256k1" }], icon });
+
+  test("is optional and kept when it is a PNG or WebP path on the merchant origin", () => {
+    expect(buildMerchantKeySet([signer])).not.toHaveProperty("icon");
+    expect(buildMerchantKeySet([signer], { icon: "/brand/curvy-icon.png" }).icon).toBe("/brand/curvy-icon.png");
+    expect(keySet("/icon.WEBP").icon).toBe("/icon.WEBP");
+  });
+
+  test.each([
+    "https://cdn.example/icon.png",
+    "//cdn.example/icon.png",
+    "icon.png",
+    "/icon.svg",
+    "/icon.png?v=2",
+    "/icon.png#x",
+    "/a\\b.png",
+    "/a b.png",
+    `/${"a".repeat(260)}.png`,
+    42,
+  ])("rejects %s", (icon) => {
+    expect(() => keySet(icon)).toThrow("merchant key set icon");
+  });
+
+  test("carries an optional shop name, as plain text of at most 60 characters", () => {
+    const named = (name: unknown) =>
+      parseMerchantKeySet({ version: 1, signers: [{ ...signer, alg: "eip712-secp256k1" }], name });
+
+    expect(buildMerchantKeySet([signer])).not.toHaveProperty("name");
+    expect(buildMerchantKeySet([signer], { name: "Overprint", icon: "/icon.png" })).toMatchObject({
+      name: "Overprint",
+      icon: "/icon.png",
+    });
+    expect(named("Café Ümlaut & Co.").name).toBe("Café Ümlaut & Co.");
+
+    for (const bad of ["", " Overprint", "Overprint ", "a".repeat(61), "Over\nprint", "\u202eevil", 42]) {
+      expect(() => named(bad)).toThrow("merchant key set name");
+    }
+  });
+
+  test("still rejects unknown keys", () => {
+    expect(() =>
+      parseMerchantKeySet({ version: 1, signers: [{ ...signer, alg: "eip712-secp256k1" }], logo: "/icon.png" }),
+    ).toThrow("must not contain logo");
   });
 });

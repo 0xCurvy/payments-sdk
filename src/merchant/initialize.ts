@@ -1,4 +1,4 @@
-import type { Address } from "viem";
+﻿import type { Address } from "viem";
 import type { PaymentIntent } from "../types";
 import {
   DEFAULT_CHECKOUT_COMPLETE_PATH,
@@ -35,7 +35,8 @@ export type PaymentSDKConfig = RecipientParameters & {
 export type BoundVerifyPaymentParameters = Omit<VerifyPaymentParameters, "confirmations" | "paidWhen">;
 
 export interface PaymentSDK {
-  createPaymentRequest(parameters: { amount: bigint; token: Address }): Promise<PaymentIntent>;
+  /** `description` says what the buyer is paying for; checkout shows it and prints it on their receipt. */
+  createPaymentRequest(parameters: { amount: bigint; token: Address; description?: string }): Promise<PaymentIntent>;
   /** `verifyPayment` with `confirmations` and `paidWhen` bound from `initialize`. */
   verifyPayment(parameters: BoundVerifyPaymentParameters): Promise<PaymentVerification>;
 }
@@ -100,6 +101,7 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
         checkoutCompletePath:
           resolvedCheckoutCompletePath === DEFAULT_CHECKOUT_COMPLETE_PATH ? undefined : resolvedCheckoutCompletePath,
         ttlSeconds: resolvedTtlSeconds,
+        ...(parameters.description === undefined ? {} : { description: parameters.description }),
       });
     },
     verifyPayment(parameters) {

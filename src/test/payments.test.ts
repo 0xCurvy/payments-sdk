@@ -1,4 +1,4 @@
-import { encodeAbiParameters, encodeEventTopics, getAddress, type Hex, type TransactionReceipt, zeroHash } from "viem";
+﻿import { encodeAbiParameters, encodeEventTopics, getAddress, type Hex, type TransactionReceipt, zeroHash } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   buildCheckoutCompleteUrl,
@@ -9,8 +9,10 @@ import {
   DEFAULT_PAYMENT_REQUEST_TTL_SECONDS,
   decodePaymentIntentFragment,
   findNoteInReceipt,
+  MAX_PAYMENT_DESCRIPTION_LENGTH,
   MAX_PAYMENT_REQUEST_TTL_SECONDS,
   parsePaymentIntent,
+  paymentIntentTypes,
   pendingNotesAbi,
   signPaymentIntent,
   verifyPaymentIntent,
@@ -91,6 +93,71 @@ describe("payments", () => {
         nowSeconds: 1_001,
       }),
     ).resolves.toEqual({ intent, signer: signer.address });
+  });
+
+  it("signs a description with the payment, so it can be neither removed nor added", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_000_000));
+    const signer = privateKeyToAccount(`0x${"11".repeat(32)}`);
+    const request = {
+      recipient: RECIPIENT,
+      amount: 10_000n,
+      token: TOKEN,
+      chainId: 31_337,
+      merchantOrigin: "https://merchant.example",
+      ttlSeconds: 600,
+    };
+    const described = await createPaymentRequest({ ...request, description: "Order #1048 · Blue hour print" });
+    const plain = await createPaymentRequest(request);
+    vi.useRealTimers();
+    expect(described.description).toBe("Order #1048 · Blue hour print");
+    expect("description" in plain).toBe(false);
+    expect(buildPaymentIntentTypedData(described).primaryType).toBe("DescribedPaymentIntent");
+    // Intents without a description keep the exact payload earlier SDKs signed.
+    expect(buildPaymentIntentTypedData(plain)).toMatchObject({
+      primaryType: "PaymentIntent",
+      types: paymentIntentTypes,
+    });
+
+    const sign = (typedData: Parameters<typeof signer.signTypedData>[0]) => signer.signTypedData(typedData);
+    const payment = await signPaymentIntent(described, sign);
+    const decoded = decodePaymentIntentFragment(
+      new URL(buildCheckoutUrl("https://checkout.example/pay", payment)).hash,
+    );
+    expect(decoded).toEqual(payment);
+    const keySet = buildMerchantKeySet([{ address: signer.address, notAfter: "2030-01-01T00:00:00.000Z" }]);
+    const verify = (candidate: unknown) =>
+      verifyPaymentIntent(candidate, { keySet, expectedChainId: 31_337, expectedToken: TOKEN, nowSeconds: 1_001 });
+    await expect(verify(decoded)).resolves.toEqual({ intent: described, signer: signer.address });
+
+    const { description: _removed, ...stripped } = payment.intent;
+    await expect(verify({ ...payment, intent: stripped })).rejects.toThrow("unknown payment intent signer");
+    const plainPayment = await signPaymentIntent(plain, sign);
+    await expect(
+      verify({ ...plainPayment, intent: { ...plainPayment.intent, description: "Refund to 0xattacker" } }),
+    ).rejects.toThrow("unknown payment intent signer");
+  });
+
+  it("accepts a description only as short, visible, plain text", () => {
+    const intent = {
+      token: TOKEN,
+      amount: "1",
+      chainId: 1,
+      ownerHash: "2",
+      ephemeralKeyX: "3",
+      ephemeralKeyY: "4",
+      viewTag: 5,
+      merchantOrigin: "https://merchant.example",
+      expiry: 6,
+    };
+    const withDescription = (description: unknown) => parsePaymentIntent({ ...intent, description });
+    expect(withDescription("☀️".repeat(60)).description).toBe("☀️".repeat(60));
+    expect(() => withDescription("a".repeat(MAX_PAYMENT_DESCRIPTION_LENGTH + 1))).toThrow("at most 120 characters");
+    expect(() => withDescription("")).toThrow("must be non-empty");
+    expect(() => withDescription(" Order 1")).toThrow("not start or end with spaces");
+    expect(() => withDescription("Order\n1048")).toThrow("control or text-direction");
+    expect(() => withDescription("Order \u202e8401")).toThrow("control or text-direction");
+    expect(() => withDescription(1048)).toThrow("must be a string");
   });
 
   it("defaults omitted ttlSeconds on standalone createPaymentRequest", async () => {
@@ -182,9 +249,11 @@ describe("payments", () => {
       amount: 10_000n,
       token: TOKEN,
     });
+    const described = await sdk.createPaymentRequest({ amount: 10_000n, token: TOKEN, description: "Order #1048" });
     vi.useRealTimers();
     expect(intent.expiry).toBe(1_900);
     expect(intent.merchantOrigin).toBe("https://merchant.example");
+    expect(described.description).toBe("Order #1048");
   });
 
   it("uses the init default TTL when omitted from SDK config", async () => {

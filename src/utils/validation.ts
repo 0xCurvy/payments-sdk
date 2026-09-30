@@ -1,4 +1,4 @@
-import type { Hex } from "viem";
+﻿import type { Hex } from "viem";
 import { getAddress, isAddress } from "viem/utils";
 
 const SIGNATURE = /^0x[0-9a-f]{130}$/i;
@@ -144,6 +144,67 @@ export function viewTag(value: unknown, label: string, options: { hex?: boolean 
     parsed = safeInteger(value, label);
   }
   if (parsed >= VIEW_TAG_LIMIT) throw new Error(`${label} must fit uint16`);
+  return parsed;
+}
+
+/** Longest icon path a merchant key set can carry. */
+export const MAX_MERCHANT_ICON_PATH_LENGTH = 256;
+
+/** Longest description a payment can carry: one line of receipt text, not an invoice. */
+export const MAX_PAYMENT_DESCRIPTION_LENGTH = 120;
+
+// Control characters and text-direction overrides could make a description read as something it isn't.
+const HIDDEN_CHARACTERS = /[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+
+/** What the buyer is paying for, as the shop words it: non-empty, trimmed, at most 120 characters, plain text. */
+export function paymentDescription(value: unknown, label: string): string {
+  const parsed = string(value, label);
+  if (parsed === "" || parsed !== parsed.trim())
+    throw new Error(`${label} must be non-empty and not start or end with spaces`);
+  if ([...parsed].length > MAX_PAYMENT_DESCRIPTION_LENGTH) {
+    throw new Error(`${label} must be at most ${MAX_PAYMENT_DESCRIPTION_LENGTH} characters`);
+  }
+  if (HIDDEN_CHARACTERS.test(parsed)) throw new Error(`${label} must not contain control or text-direction characters`);
+  return parsed;
+}
+
+/** Longest shop name a merchant key set can carry: what checkout shows beside the shop's own address. */
+export const MAX_MERCHANT_NAME_LENGTH = 60;
+
+/**
+ * The shop's name as checkout shows it: non-empty, trimmed, at most 60 characters, plain text. The shop publishes it
+ * itself, so checkout always shows its address beside it.
+ */
+export function merchantName(value: unknown, label: string): string {
+  const parsed = string(value, label);
+  if (parsed === "" || parsed !== parsed.trim())
+    throw new Error(`${label} must be non-empty and not start or end with spaces`);
+  if ([...parsed].length > MAX_MERCHANT_NAME_LENGTH) {
+    throw new Error(`${label} must be at most ${MAX_MERCHANT_NAME_LENGTH} characters`);
+  }
+  if (HIDDEN_CHARACTERS.test(parsed)) throw new Error(`${label} must not contain control or text-direction characters`);
+  return parsed;
+}
+
+/** A checkout icon: an absolute PNG or WebP path on the merchant origin, never another host or an SVG. */
+export function merchantIconPath(value: unknown, label: string): string {
+  const parsed = string(value, label);
+  if (
+    parsed.length > MAX_MERCHANT_ICON_PATH_LENGTH ||
+    !parsed.startsWith("/") ||
+    parsed.startsWith("//") ||
+    parsed.includes("\\") ||
+    parsed.includes("?") ||
+    parsed.includes("#") ||
+    parsed.includes("://") ||
+    !/\.(png|webp)$/i.test(parsed)
+  ) {
+    throw new Error(`${label} must be an absolute path to a .png or .webp file on the merchant origin`);
+  }
+  const resolved = new URL(parsed, "https://merchant.invalid");
+  if (resolved.pathname !== parsed) {
+    throw new Error(`${label} must be an absolute path to a .png or .webp file on the merchant origin`);
+  }
   return parsed;
 }
 

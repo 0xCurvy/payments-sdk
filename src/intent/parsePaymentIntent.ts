@@ -6,6 +6,7 @@ import {
   boundedDecimal,
   checkoutCompletePath,
   merchantOrigin,
+  paymentDescription,
   positiveSafeInteger,
   record,
   requiredAndOptionalKeys,
@@ -25,7 +26,7 @@ const REQUIRED_PAYMENT_INTENT_KEYS = [
   "expiry",
 ] as const;
 
-const OPTIONAL_PAYMENT_INTENT_KEYS = ["checkoutCompletePath"] as const;
+const OPTIONAL_PAYMENT_INTENT_KEYS = ["checkoutCompletePath", "description"] as const;
 
 /**
  * Parse and canonicalize an untrusted payment intent. Unknown fields are rejected.
@@ -47,5 +48,8 @@ export function parsePaymentIntent(value: unknown): PaymentIntent {
     merchantOrigin: merchantOrigin(input.merchantOrigin, "intent.merchantOrigin"),
     checkoutCompletePath: checkoutCompletePath(input.checkoutCompletePath, "intent.checkoutCompletePath"),
     expiry: positiveSafeInteger(input.expiry, "intent.expiry"),
+    ...(input.description === undefined
+      ? {}
+      : { description: paymentDescription(input.description, "intent.description") }),
   };
 }
