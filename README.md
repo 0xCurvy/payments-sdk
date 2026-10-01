@@ -34,7 +34,7 @@ The merchant signing key must stay on the backend. A merchant frontend asks its 
 Checkout requests are signed by a key used for nothing else: it holds no funds, pays no gas and is independent of any wallet or Curvy key. Create one on the backend:
 
 ```sh
-npx @0xcurvy/payments-sdk create-signer [--out <file>]
+npx @0xcurvy/payments-sdk@0.2.0-rc.1 create-signer [--out <file>]
 ```
 
 It prints the public address and writes the private key to an owner-only file (default `curvy-checkout-signer.secret.json`), refusing to replace an existing one. Move the key into your secret store and publish the address with `buildMerchantKeySet`. In code, `generateCheckoutSigningKey()` from `/merchant/keys` returns `{ privateKey, address }`. A KMS or HSM can hold the key instead: pass your own signer function to `signPaymentIntent`.
@@ -44,7 +44,7 @@ It prints the public address and writes the private key to an owner-only file (d
 Install the Rust core next to the payments SDK in the backend package. It is an optional peer, so browser-only consumers do not pull the WASM package. Pin it: the npm `latest` tag of `@0xcurvy/rs-core-wasm` does not match the peer version.
 
 ```sh
-pnpm add @0xcurvy/payments-sdk @0xcurvy/rs-core-wasm@0.1.0-rc.4
+pnpm add @0xcurvy/payments-sdk@0.2.0-rc.1 @0xcurvy/rs-core-wasm@0.1.0-rc.4
 ```
 
 Bind the SDK settings once. Then, for every checkout, create a request, store it, sign it and redirect:
