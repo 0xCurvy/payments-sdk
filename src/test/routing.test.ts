@@ -160,6 +160,21 @@ describe("a payment bridged to the routed network", () => {
     expect((await verify(intent, AMOUNT - allowance - 1_000n)).status).toBe("underpaid");
   });
 
+  it("wants the full amount when the caller says the payment can't have been bridged", async () => {
+    const intent = await request({ chainId: ROUTED_PAYMENT_CHAIN_ID });
+    const verification = await verifyPayment({
+      publicClient: mockClient({ chainId: intent.chainId, receipts: [await shieldOf(intent, AMOUNT - 180_000n)] })
+        .client,
+      aggregatorAddress: AGGREGATOR,
+      request: intent,
+      confirmations: 1,
+      txHash: SHIELD_TX,
+      allowBridgeShortfall: false,
+    });
+
+    expect(verification).toMatchObject({ status: "underpaid", payment: { minimumNetAmount: netOf(AMOUNT) } });
+  });
+
   it("still wants the full amount on any other network, where nothing is bridged", async () => {
     const intent = await request();
 

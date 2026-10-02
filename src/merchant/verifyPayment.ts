@@ -70,6 +70,12 @@ export interface VerifyPaymentParameters {
   confirmations: number;
   /** When a note counts as `paid`: see {@link PaidWhen}. Default `"shielded"`. */
   paidWhen?: PaidWhen;
+  /**
+   * Whether a payment on `ROUTED_PAYMENT_CHAIN_ID` may arrive up to `ROUTED_PAYMENT_TOLERANCE_BPS` short, because
+   * it may have been bridged from another network. Default true; pass false for a payment that can't have been
+   * bridged, which must arrive in full.
+   */
+  allowBridgeShortfall?: boolean;
   /** Untrusted hint, typically from the checkout return URL. */
   txHash?: Hex;
   /**
@@ -172,6 +178,7 @@ interface ParsedParameters {
   request: PaymentIntent;
   confirmations: bigint;
   paidWhen: PaidWhen;
+  allowBridgeShortfall: boolean;
   lookup: { txHash: Hex } | { fromBlock: bigint };
 }
 
@@ -235,6 +242,7 @@ function parseParameters(parameters: VerifyPaymentParameters): ParsedParameters 
     request,
     confirmations: BigInt(parameters.confirmations),
     paidWhen,
+    allowBridgeShortfall: parameters.allowBridgeShortfall !== false,
     lookup,
   };
 }
@@ -493,7 +501,9 @@ async function assessNote(
   const full = minimumNetAmount(amount, fees, portalShield);
   // On the routed network a payment may have been bridged from another one, and arrive short by what that cost.
   const tolerance =
-    request.chainId === ROUTED_PAYMENT_CHAIN_ID ? (amount * BigInt(ROUTED_PAYMENT_TOLERANCE_BPS)) / 10_000n : 0n;
+    parameters.allowBridgeShortfall && request.chainId === ROUTED_PAYMENT_CHAIN_ID
+      ? (amount * BigInt(ROUTED_PAYMENT_TOLERANCE_BPS)) / 10_000n
+      : 0n;
   const minimum = minimumNetAmount(amount - tolerance, fees, portalShield);
   const token = tokenIds.find((entry) => entry.id !== null && entry.id === note.token)?.token ?? null;
   const confirmations = latestBlock >= blockNumber ? latestBlock - blockNumber + 1n : 0n;

@@ -8,6 +8,7 @@ export {
   type X402Merchant,
   type X402MerchantClient,
   type X402MerchantConfig,
+  type X402MerchantToken,
   type X402PaymentEvent,
   type X402RequestLike,
   type X402Scheme,

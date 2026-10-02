@@ -70,6 +70,24 @@ export const TERMINAL_PORTAL_FAILURES: ReadonlySet<string> = new Set(["complianc
 
 export type { CurvyCurrency, CurvyNetwork } from "../chain/networks";
 
+/** `POST /bridge/estimate`: what moving `fromAmount` to another network delivers, net of Curvy's costs. */
+export interface BridgeEstimateRequest {
+  fromChainId: number;
+  toChainId: number;
+  fromToken: Address;
+  toToken: Address;
+  fromAmount: bigint;
+  /** The payment address the bridge would move it from. */
+  fromAddress: Address;
+}
+
+export interface BridgeEstimate {
+  /** What is expected to arrive, in `toToken` base units. */
+  toAmount: bigint;
+  /** What arrives at worst. */
+  toAmountMin: bigint;
+}
+
 export interface BroadcasterClient {
   readonly url: string;
   /** The Curvy deployment and shieldable tokens on a chain; `undefined` when the broadcaster does not serve it. */
@@ -77,6 +95,8 @@ export interface BroadcasterClient {
   /** Idempotent: re-registering the same portal returns its current status. */
   registerPayment(registration: PortalPaymentRegistration): Promise<PortalPaymentStatus>;
   status(portalAddress: Address): Promise<PortalPaymentStatus | undefined>;
+  /** Quote a bridge from another network. Needed only for an x402 merchant's `otherNetworks`. */
+  estimateBridge?(request: BridgeEstimateRequest): Promise<BridgeEstimate>;
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -174,6 +194,22 @@ export function createBroadcasterClient(options: BroadcasterClientOptions = {}):
       const body = await readJson(response);
       if (!response.ok) throw new BroadcasterError("/portal/payments", response.status, body);
       return parseStatus(body);
+    },
+    async estimateBridge(request) {
+      const response = await fetchImpl(`${url}/bridge/estimate`, {
+        method: "POST",
+        headers: { ...(await headers()), "content-type": "application/json" },
+        body: JSON.stringify({ ...request, fromAmount: request.fromAmount.toString() }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const body = await readJson(response);
+      if (!response.ok) throw new BroadcasterError("/bridge/estimate", response.status, body);
+      const outer = record(body, "bridge estimate");
+      const data = record(outer.data ?? outer, "bridge estimate.data");
+      return {
+        toAmount: parseUint(data.toAmount, "bridge estimate.toAmount"),
+        toAmountMin: parseUint(data.toAmountMin, "bridge estimate.toAmountMin"),
+      };
     },
     async status(portalAddress) {
       const response = await fetchImpl(`${url}/portal/status?address=${getAddress(portalAddress)}`, {

@@ -1,6 +1,11 @@
 import type { Address, Hex, PublicClient } from "viem";
 import { createPublicClient, erc20Abi, getAddress, http, isAddress, isHex, parseEventLogs } from "viem";
-import { getCurvyNetwork, resolveToken } from "../../chain/networks";
+import {
+  getCurvyNetwork,
+  ROUTED_PAYMENT_CHAIN_ID,
+  ROUTED_PAYMENT_TOLERANCE_BPS,
+  resolveTokens,
+} from "../../chain/networks";
 import { predictPortalAddress } from "../../chain/predictPortalAddress";
 import { vaultAbi } from "../../contracts";
 import {
@@ -15,6 +20,7 @@ import { type RecipientParameters, resolveRecipient } from "../../merchant/inter
 import { PaymentVerificationError, verifyPayment } from "../../merchant/verifyPayment";
 import type { PaymentIntent } from "../../types";
 import { DEFAULT_CHECKOUT_COMPLETE_PATH } from "../../utils/validation";
+import { X402_BRIDGED_TOKENS, type X402BridgedToken } from "../bridged-tokens";
 import {
   type BroadcasterClient,
   createBroadcasterClient,
@@ -87,12 +93,26 @@ export interface X402MerchantOptions {
   rpcUrl?: string;
   publicClient?: X402MerchantClient;
   /**
-   * The token you charge in: a symbol Curvy takes on the chain (`"USDC"`, `"USDT"`) or an address. It must be
-   * registered in the Curvy vault.
+   * The tokens you charge in, preferred first: symbols Curvy takes on the chain (`"USDC"`, `"USDT"`) or addresses,
+   * each registered in the Curvy vault, all with the same decimals. Default: every token Curvy takes there (USDC
+   * and USDT on Arbitrum One, USDC on Sepolia); required on any other chain. The 402 offers each of them.
    */
-  token: string;
-  /** The token's EIP-712 domain. Read from the contract (`name()`, `version()`) when omitted. */
-  tokenDomain?: { name: string; version: string };
+  tokens?: string[];
+  /**
+   * EIP-712 domains of tokens the SDK doesn't know, by address. Curvy's tokens have theirs built in; any other is
+   * read from the contract (`name()`, `version()`) when omitted.
+   */
+  tokenDomains?: Record<string, { name: string; version: string }>;
+  /**
+   * Also take `exact` payments on these networks (chain ids), such as Base (`8453`), in the same token. Curvy
+   * bridges them to Arbitrum One, and what that costs, at most 3% of the price, comes out of what you receive. For a
+   * merchant on Arbitrum One with a facilitator that settles there (Curvy's does). Only USDC has signed transfers on
+   * those networks: Ethereum, Base, Optimism, Polygon and Linea (`X402_BRIDGED_TOKENS`). A network is offered for a
+   * price only while its bridge is quoted under 3%. The merchant reads no chain but its own, so there the
+   * facilitator's settlement is what lets the resource be served, as with any x402 merchant; the shield on Arbitrum
+   * One is still verified before the payment counts as confirmed.
+   */
+  otherNetworks?: number[];
   /**
    * Curvy contract addresses. Built into the SDK for Curvy's networks (Arbitrum One, Ethereum Sepolia); on any
    * other chain, discovered from the broadcaster (`GET /portal/networks/:chainId`) when omitted. Pass them for such
@@ -179,13 +199,24 @@ export type X402ChargeResult =
       headers: Record<string, string>;
     };
 
+/** A token an x402 merchant charges in. */
+export interface X402MerchantToken {
+  address: Address;
+  symbol?: string;
+  decimals: number;
+  /** The token's id in the Curvy vault. */
+  vaultTokenId: bigint;
+  /** Its EIP-712 domain, for `exact`; absent when only `curvy-transfer` is offered. */
+  domain?: { name: string; version: string };
+}
+
 export interface X402Merchant {
   readonly chainId: number;
   readonly network: X402Network;
-  readonly token: Address;
-  /** The token's id in the Curvy vault. */
-  readonly tokenId: bigint;
-  readonly tokenDomain: { name: string; version: string };
+  /** The tokens the 402 offers on this network, preferred first. */
+  readonly tokens: readonly X402MerchantToken[];
+  /** Other networks the 402 may offer `exact` on, with the token there; Curvy bridges those payments over. */
+  readonly otherNetworks: readonly Readonly<X402BridgedToken>[];
   readonly addresses: CurvyDeployment;
   readonly schemes: readonly X402Scheme[];
   /** The recovery address every `payTo` is derived with. */
@@ -212,11 +243,14 @@ export interface X402Merchant {
    * your payment reference (slower, works even if the shield reply was lost). Automatic unless `autoShield` is false.
    */
   confirm(payTo: string): Promise<X402Payment>;
-  /** Current on-chain fees for this token (cached). */
-  fees(): Promise<ChainFees>;
-  /** What a payer's `price` leaves in your note after fees. */
-  quote(price: bigint): Promise<FeeBreakdown>;
-  /** The smallest price that still credits your note: the on-chain fee floor, or the broadcaster's minimum if higher. */
+  /** Current on-chain fees for one of your tokens (cached); the first by default. */
+  fees(token?: string): Promise<ChainFees>;
+  /** What a payer's `price` leaves in your note after fees, in one of your tokens; the first by default. */
+  quote(price: bigint, token?: string): Promise<FeeBreakdown>;
+  /**
+   * The smallest price that still credits your note in every one of your tokens: the on-chain fee floor, or the
+   * broadcaster's minimum if higher.
+   */
   minimumPrice(): Promise<bigint>;
   /** The broadcaster's USD minimum per portal, if it reports one. */
   readonly minimumPortalUsd?: number;
@@ -320,7 +354,8 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
 
   const chainId = await publicClient.getChainId();
   const network = x402Network(chainId);
-  const token = resolveToken(chainId, config.token);
+  const tokenAddresses = resolveTokens(chainId, config.tokens);
+  if (tokenAddresses.length === 0) throw new Error(`tokens are required: chain ${chainId} is not a Curvy network`);
 
   // The facilitator only needs to speak x402 v2 `exact` on this chain; any standard one will do.
   if (facilitator && schemes.includes(EXACT_SCHEME)) {
@@ -360,46 +395,166 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     vault: getAddress(addresses.vault as Address),
   };
 
-  const tokenId = await publicClient.readContract({
-    address: deployment.vault,
-    abi: vaultAbi,
-    functionName: "getTokenId",
-    args: [token],
-  });
-  if (tokenId === 0n) throw new Error(`token ${token} is not registered in vault ${deployment.vault}`);
+  const curvyCurrencies = getCurvyNetwork(chainId)?.currencies ?? [];
+  const offersExact = schemes.includes(EXACT_SCHEME);
+  const tokens: X402MerchantToken[] = await Promise.all(
+    tokenAddresses.map(async (address): Promise<X402MerchantToken> => {
+      const vaultTokenId = await publicClient.readContract({
+        address: deployment.vault,
+        abi: vaultAbi,
+        functionName: "getTokenId",
+        args: [address],
+      });
+      if (vaultTokenId === 0n) throw new Error(`token ${address} is not registered in vault ${deployment.vault}`);
+      const known = curvyCurrencies.find((currency) => currency.address === address);
+      const configuredDomain = Object.entries(config.tokenDomains ?? {}).find(
+        ([key]) => isAddress(key) && getAddress(key) === address,
+      )?.[1];
+      const [symbol, decimals, domain] = await Promise.all([
+        known?.symbol ?? readSymbol(address),
+        known?.decimals ?? publicClient.readContract({ address, abi: erc20Abi, functionName: "decimals" }),
+        // Only `exact` signs with the token's domain; a transfer-only merchant needs none.
+        offersExact ? (configuredDomain ?? known?.eip712 ?? readTokenDomain(address)) : undefined,
+      ]);
+      return {
+        address,
+        ...(symbol === undefined ? {} : { symbol }),
+        decimals: Number(decimals),
+        vaultTokenId,
+        ...(domain === undefined ? {} : { domain }),
+      };
+    }),
+  );
+  // One price is charged in any of them.
+  if (new Set(tokens.map((token) => token.decimals)).size > 1) throw new Error("tokens must share decimals");
+  const [primary] = tokens as [X402MerchantToken, ...X402MerchantToken[]];
 
-  const tokenDomain = config.tokenDomain ?? (await readTokenDomain());
-  async function readTokenDomain(): Promise<{ name: string; version: string }> {
+  async function readSymbol(address: Address): Promise<string | undefined> {
+    return publicClient.readContract({ address, abi: erc20Abi, functionName: "symbol" }).catch(() => undefined);
+  }
+
+  async function readTokenDomain(address: Address): Promise<{ name: string; version: string }> {
     try {
       const [name, version] = await Promise.all([
-        publicClient.readContract({ address: token, abi: erc20DomainAbi, functionName: "name" }),
-        publicClient.readContract({ address: token, abi: erc20DomainAbi, functionName: "version" }),
+        publicClient.readContract({ address, abi: erc20DomainAbi, functionName: "name" }),
+        publicClient.readContract({ address, abi: erc20DomainAbi, functionName: "version" }),
       ]);
       return { name, version };
     } catch (error) {
-      throw new Error(`could not read the EIP-712 domain of ${token}; set tokenDomain: ${errorMessage(error)}`);
+      throw new Error(`could not read the EIP-712 domain of ${address}; set tokenDomains: ${errorMessage(error)}`);
     }
   }
 
-  // The broadcaster's USD minimum, in token base units, assuming a USD-pegged token.
+  /** The merchant's token with this address, or the first. */
+  function tokenFor(address: string | undefined): X402MerchantToken {
+    return (
+      tokens.find((token) => address !== undefined && token.address.toLowerCase() === address.toLowerCase()) ?? primary
+    );
+  }
+
+  // Other networks: the same token there (by symbol), with signed transfers, bridged here by Curvy.
+  const otherNetworks = (config.otherNetworks ?? []).map((otherChainId) => {
+    if (otherChainId === chainId) throw new Error(`otherNetworks must not include this network (${chainId})`);
+    if (chainId !== ROUTED_PAYMENT_CHAIN_ID) {
+      throw new Error(
+        `otherNetworks needs a merchant on Arbitrum One (${ROUTED_PAYMENT_CHAIN_ID}): Curvy bridges only there`,
+      );
+    }
+    if (!facilitator || !offersExact) throw new Error('otherNetworks needs the "exact" scheme and a facilitator');
+    const option = X402_BRIDGED_TOKENS.find(
+      (candidate) =>
+        candidate.chainId === otherChainId &&
+        tokens.some((token) => token.symbol === candidate.symbol && token.decimals === candidate.decimals),
+    );
+    if (!option) {
+      throw new Error(`chain ${otherChainId} has no token with signed transfers like yours (see X402_BRIDGED_TOKENS)`);
+    }
+    return option;
+  });
+  if (otherNetworks.length > 0) {
+    if (!broadcaster.estimateBridge) throw new Error("otherNetworks needs a broadcaster that quotes bridges");
+    const supported = await (facilitator as FacilitatorClient).supported();
+    for (const option of otherNetworks) {
+      const served = supported.kinds.some(
+        (kind) =>
+          kind.x402Version === X402_VERSION &&
+          kind.scheme === EXACT_SCHEME &&
+          kind.network === x402Network(option.chainId),
+      );
+      if (!served) throw new Error(`the facilitator does not settle "${EXACT_SCHEME}" on ${option.network}`);
+    }
+  }
+
+  /** The merchant's token a payment on `requirements` counts in: the one paid here, or the one bridged into. */
+  function tokenPaidBy(requirements: X402PaymentRequirements): X402MerchantToken {
+    if (requirements.network === network) return tokenFor(requirements.asset);
+    const option = otherNetworks.find((candidate) => x402Network(candidate.chainId) === requirements.network);
+    return tokens.find((token) => token.symbol === option?.symbol) ?? primary;
+  }
+
+  // The broadcaster's USD minimum, in token base units, assuming USD-pegged tokens (they share decimals).
   const broadcasterFloor = (() => {
     if (config.enforceBroadcasterMinimum === false || !discovered?.minPortalUsd) return 0n;
-    const currency = discovered.currencies.find((entry) => entry.address.toLowerCase() === token.toLowerCase());
+    const currency = discovered.currencies.find((entry) => tokens.some((token) => token.address === entry.address));
     if (!currency) return 0n;
     return BigInt(Math.ceil(discovered.minPortalUsd * 10 ** currency.decimals));
   })();
 
-  let feesCache: Promise<ChainFees> | undefined;
-  function fees(): Promise<ChainFees> {
-    feesCache ??= readChainFees({ publicClient, vaultAddress: deployment.vault, token }).catch((error) => {
-      feesCache = undefined;
-      throw error;
-    });
-    return feesCache;
+  const feesCache = new Map<Address, Promise<ChainFees>>();
+  function fees(address?: string): Promise<ChainFees> {
+    const token = tokenFor(address).address;
+    let cached = feesCache.get(token);
+    if (!cached) {
+      cached = readChainFees({ publicClient, vaultAddress: deployment.vault, token }).catch((error) => {
+        feesCache.delete(token);
+        throw error;
+      });
+      feesCache.set(token, cached);
+    }
+    return cached;
   }
+  /** The highest floor among the tokens, so a price is payable in every one of them. */
   async function minimumPrice(): Promise<bigint> {
-    const onChain = minimumPaymentAmount({ fees: await fees(), rail: "portal" });
-    return onChain > broadcasterFloor ? onChain : broadcasterFloor;
+    const floors = await Promise.all(
+      tokens.map(async (token) => minimumPaymentAmount({ fees: await fees(token.address), rail: "portal" })),
+    );
+    return [...floors, broadcasterFloor].reduce((highest, floor) => (floor > highest ? floor : highest), 0n);
+  }
+
+  /** A bridge quote per network, token and price, kept a minute: one 402 shouldn't wait on every network each time. */
+  const BRIDGE_QUOTE_TTL_MS = 60_000;
+  const bridgeQuotes = new Map<string, { at: number; offered: Promise<boolean> }>();
+
+  /**
+   * Other networks a price can be paid on: those whose bridge here is quoted to deliver at least the price less
+   * `ROUTED_PAYMENT_TOLERANCE_BPS`. A network whose quote fails isn't offered this time.
+   */
+  async function bridgedOptions(price: bigint, payTo: Address): Promise<Readonly<X402BridgedToken>[]> {
+    const offered = await Promise.all(
+      otherNetworks.map((option) => {
+        const key = `${option.chainId}:${price}`;
+        const cached = bridgeQuotes.get(key);
+        if (cached && Date.now() - cached.at < BRIDGE_QUOTE_TTL_MS) return cached.offered;
+        const into = tokens.find((token) => token.symbol === option.symbol) ?? primary;
+        const quote = (broadcaster.estimateBridge as NonNullable<BroadcasterClient["estimateBridge"]>)({
+          fromChainId: option.chainId,
+          toChainId: chainId,
+          fromToken: option.address,
+          toToken: into.address,
+          fromAmount: price,
+          fromAddress: payTo,
+        }).then(
+          ({ toAmountMin }) => toAmountMin >= price - (price * BigInt(ROUTED_PAYMENT_TOLERANCE_BPS)) / 10_000n,
+          () => {
+            bridgeQuotes.delete(key);
+            return false;
+          },
+        );
+        bridgeQuotes.set(key, { at: Date.now(), offered: quote });
+        return quote;
+      }),
+    );
+    return otherNetworks.filter((_, index) => offered[index]);
   }
 
   const timers = new Map<ReturnType<typeof setTimeout>, () => void>();
@@ -452,7 +607,8 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     });
   }
 
-  function portalBalance(payTo: Address): Promise<bigint> {
+  /** What `payTo` holds of one of the merchant's tokens on this network. */
+  function portalBalance(payTo: Address, token: Address): Promise<bigint> {
     return publicClient.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [payTo] });
   }
 
@@ -509,7 +665,7 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     const intent = await createPaymentRequest({
       recipient,
       amount: options.price,
-      token,
+      token: primary.address,
       chainId,
       merchantOrigin: merchantOrigin ?? new URL(resource).origin,
       ttlSeconds: challengeTtlSeconds,
@@ -520,22 +676,33 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
       ownerHash: intent.ownerHash,
       recovery,
     });
-    const base = {
-      network,
-      asset: token,
-      amount: options.price.toString(),
-      payTo,
-      maxTimeoutSeconds: challengeTtlSeconds,
-    };
-    const accepts: X402PaymentRequirements[] = schemes.map((scheme) =>
-      scheme === EXACT_SCHEME
-        ? {
-            ...base,
-            scheme: EXACT_SCHEME,
-            extra: { name: tokenDomain.name, version: tokenDomain.version, assetTransferMethod: ASSET_TRANSFER_METHOD },
-          }
-        : { ...base, scheme: TRANSFER_SCHEME, extra: { assetTransferMethod: TRANSFER_METHOD } },
-    );
+    const base = { amount: options.price.toString(), payTo, maxTimeoutSeconds: challengeTtlSeconds };
+    const exact = (on: X402Network, asset: Address, domain: { name: string; version: string }) => ({
+      ...base,
+      network: on,
+      asset,
+      scheme: EXACT_SCHEME,
+      extra: { name: domain.name, version: domain.version, assetTransferMethod: ASSET_TRANSFER_METHOD },
+    });
+    // Each token here in each scheme, then `exact` on the other networks whose bridge is quoted under the limit.
+    const accepts: X402PaymentRequirements[] = [
+      ...tokens.flatMap((token) =>
+        schemes.map((scheme) =>
+          scheme === EXACT_SCHEME
+            ? exact(network, token.address, token.domain as { name: string; version: string })
+            : {
+                ...base,
+                network,
+                asset: token.address,
+                scheme: TRANSFER_SCHEME,
+                extra: { assetTransferMethod: TRANSFER_METHOD },
+              },
+        ),
+      ),
+      ...(await bridgedOptions(options.price, payTo)).map((option) =>
+        exact(x402Network(option.chainId), option.address, option.eip712),
+      ),
+    ];
     const payment: X402Payment = {
       payTo,
       status: "pending",
@@ -589,6 +756,9 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     info: X402ResourceInfo,
   ): Promise<X402ChargeResult> {
     if (!facilitator) throw new Error("no facilitator configured");
+    // On another network the merchant reads no chain: the facilitator's settlement is the go-ahead there.
+    const bridged = requirements.network !== network;
+    const asset = getAddress(requirements.asset);
     let settlement: X402SettleResponse;
     try {
       settlement = await facilitator.settle(payload, requirements);
@@ -603,7 +773,7 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     if (!settlement.success) {
       // A retry after a lost reply makes standard facilitators answer "nonce already used" although the
       // transfer landed. The portal balance decides, never the facilitator's word.
-      if ((await portalBalance(payment.payTo)) >= BigInt(payment.amount)) {
+      if (!bridged && (await portalBalance(payment.payTo, asset)) >= BigInt(payment.amount)) {
         return markSettled(payment, {
           success: true,
           transaction: "",
@@ -618,8 +788,9 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
         `settlement failed: ${settlement.errorReason ?? "rejected by the facilitator"}`,
       );
     }
-    // The facilitator's word is not the gate: the portal must actually hold the amount.
-    if ((await portalBalance(payment.payTo)) < BigInt(payment.amount)) {
+    // The facilitator's word is not the gate here: the portal must actually hold the amount. On another network, as
+    // with any x402 merchant, it is; the shield on this network is still verified before the payment is confirmed.
+    if (!bridged && (await portalBalance(payment.payTo, asset)) < BigInt(payment.amount)) {
       payment.error = "facilitator reported success but the portal is not funded";
       await store.put(payment);
       emit("error", payment, new Error(payment.error));
@@ -631,9 +802,11 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
   /** `curvy-transfer`: the payer moved the tokens itself; the proof is the portal's balance. */
   async function settleTransfer(
     payment: X402Payment,
+    requirements: X402PaymentRequirements,
     payload: X402PaymentPayload,
     info: X402ResourceInfo,
   ): Promise<X402ChargeResult> {
+    const asset = getAddress(requirements.asset);
     let transfer: ReturnType<typeof parseTransferPayload>;
     try {
       transfer = parseTransferPayload(payload.payload);
@@ -665,13 +838,13 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
       const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs, strict: true });
       const toPortal = transfers.find(
         (log) =>
-          log.address.toLowerCase() === token.toLowerCase() &&
+          log.address.toLowerCase() === asset.toLowerCase() &&
           log.args.to.toLowerCase() === payment.payTo.toLowerCase(),
       );
       if (toPortal) payer = getAddress(toPortal.args.from);
       else if (typeof receipt.from === "string" && isAddress(receipt.from)) payer = getAddress(receipt.from);
     }
-    const balance = await portalBalance(payment.payTo);
+    const balance = await portalBalance(payment.payTo, asset);
     if (balance < BigInt(payment.amount)) {
       return paymentRequired(
         payment,
@@ -699,7 +872,7 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     const floor = await minimumPrice();
     if (options.price < floor) {
       throw new Error(
-        `price ${options.price} is below the minimum of ${floor} base units for this token (on-chain fees` +
+        `price ${options.price} is below the minimum of ${floor} base units for these tokens (on-chain fees` +
           `${broadcasterFloor > 0n ? ` and the broadcaster's ${discovered?.minPortalUsd} USD per portal` : ""})`,
       );
     }
@@ -734,10 +907,14 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
       if (BigInt(payment.amount) !== options.price) {
         return await challenge(resource, options, "the price of this resource changed");
       }
+      // Which of the merchant's tokens it counts in, and where it is paid when that's another network.
+      payment.token = tokenPaidBy(requirements).address;
+      if (requirements.network === network) delete payment.paidOn;
+      else payment.paidOn = requirements.network as X402Network;
 
       if (scheme === TRANSFER_SCHEME) {
         if (payment.status === "settling") return paymentRequired(payment, info, "payment challenge is being settled");
-        return await settleTransfer(payment, payload, info);
+        return await settleTransfer(payment, requirements, payload, info);
       }
 
       if (payment.status === "pending") {
@@ -772,7 +949,9 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
 
   /** For a payment whose settlement reply was lost: does the portal hold the funds? */
   async function reconcileSettling(payment: X402Payment): Promise<boolean> {
-    if ((await portalBalance(payment.payTo)) < BigInt(payment.amount)) return false;
+    // On another network the merchant can't read the portal; the payer's retry of the same header settles it.
+    if (payment.paidOn) return false;
+    if ((await portalBalance(payment.payTo, tokenFor(payment.token).address)) < BigInt(payment.amount)) return false;
     payment.status = "settled";
     delete payment.error;
     await store.put(payment);
@@ -819,7 +998,8 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
         expectedAmount: payment.amount,
         expiry: Math.floor(Date.now() / 1_000) + shieldDeadlineSeconds,
         chainId,
-        token,
+        // The token it counts in here; Curvy finds it wherever it was paid and bridges it over.
+        token: tokenFor(payment.token).address,
       }));
     return applyPortalStatus(payment, status);
   }
@@ -858,9 +1038,10 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     }
     // The shield transaction when the broadcaster reported it; otherwise scan from the transfer into the portal,
     // which always comes first. With neither, wait: the shield poll fills in the shield transaction.
+    // A transfer on another network has no block here to scan from.
     const lookup = payment.shieldTxHash
       ? { txHash: payment.shieldTxHash }
-      : payment.settleTxHash
+      : payment.settleTxHash && !payment.paidOn
         ? { fromBlock: (await publicClient.getTransactionReceipt({ hash: payment.settleTxHash })).blockNumber }
         : null;
     if (!lookup) return payment;
@@ -870,6 +1051,8 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
       aggregatorAddress: deployment.aggregator,
       request: paymentRequest(payment),
       confirmations,
+      // Only a payment bridged from another network may arrive short, by what the bridge cost; one paid here can't.
+      allowBridgeShortfall: payment.paidOn !== undefined,
       ...lookup,
     });
     if (verification.status === "underpaid" || verification.status === "wrong_token") {
@@ -899,7 +1082,7 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
   /** The request this payment's 402 was issued for, rebuilt from the record and this merchant's settings. */
   function paymentRequest(payment: X402Payment): PaymentIntent {
     return {
-      token,
+      token: tokenFor(payment.token).address,
       amount: payment.amount,
       chainId,
       ownerHash: payment.note.ownerHash,
@@ -956,9 +1139,8 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
   return {
     chainId,
     network,
-    token,
-    tokenId,
-    tokenDomain,
+    tokens,
+    otherNetworks,
     addresses: deployment,
     schemes,
     recovery,
@@ -971,8 +1153,8 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     shield,
     confirm,
     fees,
-    async quote(price) {
-      return quotePayment({ grossAmount: price, fees: await fees(), rail: "portal" });
+    async quote(price, token) {
+      return quotePayment({ grossAmount: price, fees: await fees(token), rail: "portal" });
     },
     minimumPrice,
     close() {

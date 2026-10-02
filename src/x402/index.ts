@@ -1,4 +1,7 @@
+export { X402_BRIDGED_TOKENS, type X402BridgedToken } from "./bridged-tokens";
 export {
+  type BridgeEstimate,
+  type BridgeEstimateRequest,
   type BroadcasterClient,
   type BroadcasterClientOptions,
   BroadcasterError,

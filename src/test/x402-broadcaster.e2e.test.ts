@@ -103,7 +103,7 @@ describe.skipIf(!stackUp)("x402 e2e: @x402/fetch agent → createX402Merchant, b
       broadcaster: BROADCASTER_URL,
       rpcUrl: RPC_URL,
       recipient: RECIPIENT,
-      token,
+      tokens: [token],
       confirmations: 1,
       confirmPollMs: 500,
       onEvent: (event) => events.push(event),
@@ -174,8 +174,8 @@ describe.skipIf(!stackUp)("x402 e2e: @x402/fetch agent → createX402Merchant, b
     expect(required.accepts.map((row) => row.scheme)).toEqual([EXACT_SCHEME, TRANSFER_SCHEME]);
     expect(required.accepts[0]?.payTo).toBe(required.accepts[1]?.payTo);
     expect(required.accepts[0]?.extra).toMatchObject({
-      name: merchant.tokenDomain.name,
-      version: merchant.tokenDomain.version,
+      name: merchant.tokens[0]?.domain?.name,
+      version: merchant.tokens[0]?.domain?.version,
     });
   });
 

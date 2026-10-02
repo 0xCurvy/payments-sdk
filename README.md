@@ -167,7 +167,8 @@ import { createX402Merchant, toResponse } from "@0xcurvy/payments-sdk/x402/merch
 
 const x402 = await createX402Merchant({
   rpcUrl, // JSON-RPC endpoint of the payment chain (Arbitrum One in production)
-  token: USDC, // 0xaf88d065e77c8cC2239327C5EDb3A432268e5831 on Arbitrum One
+  // tokens: ["USDC"],      // default: USDC and USDT on Arbitrum One
+  // otherNetworks: [8453], // also take USDC on Base; Curvy bridges it to Arbitrum One
   receivingKeys: process.env.CURVY_PAYMENTS_PUBLIC_KEY, // the "01…" value from the web app's Payments setup
   // Defaults: broadcaster "https://api.curvy.box" (Curvy's portal broadcaster, shields every paid portal into
   // your note) and facilitator "https://api.curvy.box/portal/x402" (Curvy's x402 facilitator, settles `exact`).
@@ -180,11 +181,17 @@ if (result.status === "payment-required") return toResponse(result.response); //
 return Response.json(data, { headers: result.headers });                       // payTo holds the amount on chain
 ```
 
-`charge()` issues the 402 with a fresh one-time `payTo` and offers two schemes on it: `exact`, where the payer signs an EIP-3009 authorization that the facilitator submits, and `curvy-transfer`, where the payer sends a plain ERC-20 transfer itself and presents the transaction hash. With `facilitator: false` only `curvy-transfer` is offered. It resolves `paid` only once the portal actually holds the amount, then registers the portal with the broadcaster, which screens, deploys and shields it, and confirms your payment reference on chain in the background. Every `payTo` is derived with `recovery = NO_RECOVERY_ADDRESS` unless you set `recovery`, so funds in a portal the broadcaster never shields are lost for good. Agents pay with any x402 client (`exact`), or with `createX402Payer` from `@0xcurvy/payments-sdk/x402` (both schemes). Docs: [x402 and the Payments SDK](https://docs.curvy.box/sdk/payments/x402), [Payments SDK](https://docs.curvy.box/sdk/payments/).
+`charge()` issues the 402 with a fresh one-time `payTo` and offers each of your tokens on it in two schemes: `exact`, where the payer signs an EIP-3009 authorization that the facilitator submits, and `curvy-transfer`, where the payer sends a plain ERC-20 transfer itself and presents the transaction hash. With `facilitator: false` only `curvy-transfer` is offered. With `otherNetworks`, it also offers `exact` in USDC on those networks (Ethereum, Base, Optimism, Polygon, Linea; `X402_BRIDGED_TOKENS`) while the bridge to Arbitrum One is quoted under 3% of the price, which you absorb; there the facilitator's settlement is the go-ahead, and the shield on Arbitrum One is still verified before the payment is confirmed. It resolves `paid` only once the portal actually holds the amount (or the facilitator settled it on another network), then registers the portal with the broadcaster, which screens, deploys and shields it, and confirms your payment reference on chain in the background. Every `payTo` is derived with `recovery = NO_RECOVERY_ADDRESS` unless you set `recovery`, so funds in a portal the broadcaster never shields are lost for good. Agents pay with any x402 client (`exact`), or with `createX402Payer` from `@0xcurvy/payments-sdk/x402` (both schemes). Docs: [x402 and the Payments SDK](https://docs.curvy.box/sdk/payments/x402), [Payments SDK](https://docs.curvy.box/sdk/payments/).
 
 ## Payment descriptions
 
 `createPaymentRequest` takes an optional `description` (at most 120 characters of plain text: no control or text-direction characters, no leading or trailing spaces). Checkout shows it under your shop's name and prints it on the buyer's receipt. It is signed with the payment as a `DescribedPaymentIntent`, a separate EIP-712 type, so it can't be changed, added or removed on the way. Intents without one are signed exactly as before. The description travels in the checkout link's fragment and is not part of what checkout registers with Curvy's payment service.
+
+## Breaking changes in 0.2.0-rc.3
+
+- `createX402Merchant` takes `tokens` (symbols or addresses, default USDC and USDT on Arbitrum One) instead of `token`, and `tokenDomains` (by address) instead of `tokenDomain`; Curvy's tokens have their EIP-712 domains built in (`CurvyCurrency.eip712`). `X402Merchant.tokens` replaces `token`, `tokenId` and `tokenDomain`; `fees` and `quote` take an optional token.
+- New: `otherNetworks` on `createX402Merchant`, `X402_BRIDGED_TOKENS`, `BroadcasterClient.estimateBridge`, and `X402Payment.token` / `paidOn`.
+- `verifyPayment` takes `allowBridgeShortfall` (default true). x402 payments made on the merchant's own network now must arrive in full; rc.2 accepted them up to 3% short on Arbitrum One.
 
 ## Breaking changes in 0.2.0-rc.2
 

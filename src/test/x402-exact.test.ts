@@ -53,6 +53,7 @@ import {
 import { computeNoteId, pendingNotesLog, shieldPortalDeployedLog } from "./verifyPaymentFixtures";
 
 const TOKEN = getAddress("0x0000000000000000000000000000000000000003");
+const USDT = getAddress("0x0000000000000000000000000000000000000023");
 const AGGREGATOR = getAddress("0x0000000000000000000000000000000000000004");
 const VAULT = getAddress("0x0000000000000000000000000000000000000005");
 const PORTAL_FACTORY = getAddress("0x0000000000000000000000000000000000000006");
@@ -83,15 +84,16 @@ async function shieldLogs(
   note: { ownerHash: string; ephemeralKey: readonly [string, string]; viewTag: number },
   transactionHash: Hex = SHIELD_TX,
   netAmount = 9_840n,
+  tokenId = 3n,
 ): Promise<TransactionReceipt["logs"]> {
   const location = { blockNumber: 12n, transactionHash };
   const ephemeralKey = [BigInt(note.ephemeralKey[0]), BigInt(note.ephemeralKey[1])] as const;
-  const noteId = await computeNoteId(note.ownerHash, netAmount, 3n);
+  const noteId = await computeNoteId(note.ownerHash, netAmount, tokenId);
 
   return [
     pendingNotesLog(
       AGGREGATOR,
-      [{ noteId, ephemeralKey, viewTag: note.viewTag, token: 3n, amount: netAmount }],
+      [{ noteId, ephemeralKey, viewTag: note.viewTag, token: tokenId, amount: netAmount }],
       location,
     ),
     shieldPortalDeployedLog(PORTAL_FACTORY, note.ownerHash, { ...location, logIndex: 1 }),
@@ -178,9 +180,13 @@ function harness(supported = supportedResponse()): Harness {
     readContract: vi.fn(async (call: { functionName: string; args?: readonly unknown[] }) => {
       switch (call.functionName) {
         case "getTokenId":
-          return call.args?.[0] === TOKEN ? 3n : 0n;
+          return call.args?.[0] === TOKEN ? 3n : call.args?.[0] === USDT ? 4n : 0n;
         case "name":
           return "Local USDC";
+        case "symbol":
+          return call.args === undefined && (call as { address?: string }).address === USDT ? "USDT" : "USDC";
+        case "decimals":
+          return 6;
         case "version":
           return "2";
         case "getEntryPortalAddress":
@@ -214,7 +220,7 @@ async function merchantFor(h: Harness, overrides: Record<string, unknown> = {}):
     broadcaster: h.broadcaster,
     publicClient: h.publicClient as never,
     recipient: RECIPIENT,
-    token: TOKEN,
+    tokens: [TOKEN],
     confirmations: 1,
     autoShield: false,
     settleTimeoutMs: 50,
@@ -235,8 +241,9 @@ describe("createX402Merchant", () => {
     const h = harness();
     const merchant = await merchantFor(h);
     expect(merchant.network).toBe(NETWORK);
-    expect(merchant.tokenId).toBe(3n);
-    expect(merchant.tokenDomain).toEqual({ name: "Local USDC", version: "2" });
+    expect(merchant.tokens).toEqual([
+      { address: TOKEN, symbol: "USDC", decimals: 6, vaultTokenId: 3n, domain: { name: "Local USDC", version: "2" } },
+    ]);
     expect(merchant.addresses).toEqual({ aggregator: AGGREGATOR, portalFactory: PORTAL_FACTORY, vault: VAULT });
     expect(merchant.recovery).toBe(NO_RECOVERY_ADDRESS);
     expect(merchant.schemes).toEqual(["exact", "curvy-transfer"]);
@@ -567,7 +574,7 @@ describe("createX402Merchant", () => {
       broadcaster: "http://broadcaster.test/",
       publicClient: h.publicClient as never,
       recipient: RECIPIENT,
-      token: TOKEN,
+      tokens: [TOKEN],
       autoShield: false,
       fetch: fetchMock as unknown as typeof fetch,
     });
@@ -580,7 +587,7 @@ describe("createX402Merchant", () => {
     const production = await createX402Merchant({
       publicClient: h.publicClient as never,
       recipient: RECIPIENT,
-      token: TOKEN,
+      tokens: [TOKEN],
       autoShield: false,
       fetch: (async (url: string | URL | Request) => {
         const parsed = new URL(String(url));
@@ -843,7 +850,7 @@ describe("createX402Merchant: broadcaster mode", () => {
       broadcaster: b.client,
       publicClient: h.publicClient as never,
       recipient: RECIPIENT,
-      token: TOKEN,
+      tokens: [TOKEN],
       confirmations: 1,
       autoShield: false,
       onEvent: (event) => h.events.push(event),
@@ -970,7 +977,7 @@ describe("createX402Merchant: broadcaster mode", () => {
       facilitator: false,
       publicClient: h.publicClient as never,
       recipient: RECIPIENT,
-      token: TOKEN,
+      tokens: [TOKEN],
       confirmations: 1,
       autoShield: false,
     });
@@ -985,7 +992,7 @@ describe("createX402Merchant: broadcaster mode", () => {
         facilitator: false,
         publicClient: h.publicClient as never,
         recipient: RECIPIENT,
-        token: TOKEN,
+        tokens: [TOKEN],
         schemes: ["exact"],
       }),
     ).rejects.toThrow(/needs a facilitator/);
@@ -1005,7 +1012,7 @@ describe("createX402Merchant: broadcaster mode edge cases", () => {
       broadcaster: b.client,
       publicClient: h.publicClient as never,
       recipient: RECIPIENT,
-      token: TOKEN,
+      tokens: [TOKEN],
       confirmations: 1,
       autoShield: false,
       settleTimeoutMs: 50,
@@ -1362,5 +1369,130 @@ describe("createX402Payer", () => {
     // Non-402 responses pass through untouched.
     fetchMock.mockResolvedValueOnce(new Response("nope", { status: 404 }));
     expect((await payer.fetch("http://api.test/missing")).status).toBe(404);
+  });
+});
+
+describe("createX402Merchant: several tokens and other networks", () => {
+  it("offers each token, and counts a payment in the one the payer chose", async () => {
+    const h = harness();
+    const merchant = await merchantFor(h, { tokens: [TOKEN, USDT] });
+    const challenge = await merchant.charge(request(), { price: PRICE });
+    if (challenge.status !== "payment-required") throw new Error("expected a challenge");
+    const required = decodePaymentRequired(challenge.response.headers[PAYMENT_REQUIRED_HEADER] as string);
+
+    expect(required.accepts.map((row) => [row.scheme, row.asset])).toEqual([
+      ["exact", TOKEN],
+      ["curvy-transfer", TOKEN],
+      ["exact", USDT],
+      ["curvy-transfer", USDT],
+    ]);
+    expect(new Set(required.accepts.map((row) => row.payTo)).size).toBe(1);
+
+    const payload = await createExactPayment(required, PAYER, { asset: USDT });
+    const paid = await merchant.charge(request({ [PAYMENT_SIGNATURE_HEADER]: encodePaymentSignature(payload) }), {
+      price: PRICE,
+    });
+    if (paid.status !== "paid") throw new Error("expected a payment");
+    expect(paid.payment).toMatchObject({ token: USDT });
+    expect(paid.payment.paidOn).toBeUndefined();
+
+    await merchant.shield(paid.payment.payTo);
+    expect(h.broadcaster.registerPayment).toHaveBeenCalledWith(expect.objectContaining({ token: USDT }));
+    h.portals.set(paid.payment.payTo.toLowerCase(), { state: "shielded", txHash: SHIELD_TX });
+    await merchant.shield(paid.payment.payTo);
+    h.receipt.logs = await shieldLogs(paid.payment.note, SHIELD_TX, 9_840n, 4n);
+    expect((await merchant.confirm(paid.payment.payTo)).status).toBe("confirmed");
+  });
+
+  describe("on Arbitrum One with other networks", () => {
+    const BASE = "eip155:8453";
+    const BASE_USDC = getAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+
+    /** A merchant on Arbitrum One taking USDC on Base too, against the mocked deployment. */
+    async function onArbitrum(toAmountMin: bigint) {
+      const h = harness({
+        kinds: [
+          { x402Version: 2, scheme: "exact", network: "eip155:42161" },
+          { x402Version: 2, scheme: "exact", network: BASE },
+        ],
+        extensions: [],
+        signers: { "eip155:*": [SUBMITTER] },
+      });
+      h.publicClient.getChainId.mockResolvedValue(42_161);
+      const estimateBridge = vi.fn(async () => ({ toAmount: toAmountMin + 10n, toAmountMin }));
+      const merchant = await merchantFor(h, {
+        broadcaster: { ...h.broadcaster, estimateBridge },
+        addresses: { aggregator: AGGREGATOR, portalFactory: PORTAL_FACTORY, vault: VAULT },
+        otherNetworks: [8453],
+      });
+      return { h, merchant, estimateBridge };
+    }
+
+    it("offers USDC on Base only while its bridge is quoted under 3% of the price", async () => {
+      const cheap = await onArbitrum(9_900n);
+      const offered = await cheap.merchant.charge(request(), { price: PRICE });
+      if (offered.status !== "payment-required") throw new Error("expected a challenge");
+      const base = offered.payment.accepts.find((row) => row.network === BASE);
+
+      expect(base).toMatchObject({ scheme: "exact", asset: BASE_USDC, amount: "10000", extra: { name: "USD Coin" } });
+      expect(base?.payTo).toBe(offered.payment.accepts[0]?.payTo);
+      expect(cheap.estimateBridge).toHaveBeenCalledWith(
+        expect.objectContaining({ fromChainId: 8453, toChainId: 42_161, fromToken: BASE_USDC, toToken: TOKEN }),
+      );
+
+      const dear = await onArbitrum(9_600n);
+      const refused = await dear.merchant.charge(request(), { price: PRICE });
+      if (refused.status !== "payment-required") throw new Error("expected a challenge");
+      expect(refused.payment.accepts.some((row) => row.network === BASE)).toBe(false);
+    });
+
+    it("serves on the facilitator's settlement there, and confirms it bridged and a little short", async () => {
+      const { h, merchant } = await onArbitrum(9_900n);
+      // Nothing at the address on Arbitrum One: the money is on Base until Curvy bridges it.
+      h.publicClient.readContract.mockImplementation(async (call: { functionName: string; args?: unknown[] }) =>
+        call.functionName === "balanceOf" ? 0n : harness().publicClient.readContract(call),
+      );
+      const challenge = await merchant.charge(request(), { price: PRICE });
+      if (challenge.status !== "payment-required") throw new Error("expected a challenge");
+      const required = decodePaymentRequired(challenge.response.headers[PAYMENT_REQUIRED_HEADER] as string);
+      const payload = await createExactPayment(required, PAYER, { network: BASE });
+
+      const paid = await merchant.charge(request({ [PAYMENT_SIGNATURE_HEADER]: encodePaymentSignature(payload) }), {
+        price: PRICE,
+      });
+      if (paid.status !== "paid") throw new Error("expected a payment");
+      expect(paid.payment).toMatchObject({ token: TOKEN, paidOn: BASE });
+
+      await merchant.shield(paid.payment.payTo);
+      expect(h.broadcaster.registerPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ chainId: 42_161, token: TOKEN, expectedAmount: "10000" }),
+      );
+      h.portals.set(paid.payment.payTo.toLowerCase(), { state: "shielded", txHash: SHIELD_TX });
+      await merchant.shield(paid.payment.payTo);
+
+      // 2% went to the bridge: 9 800 arrived, so 9 800 - 9 - 150 reached the note.
+      h.receipt.logs = await shieldLogs(paid.payment.note, SHIELD_TX, 9_641n);
+      expect((await merchant.confirm(paid.payment.payTo)).status).toBe("confirmed");
+    });
+
+    it("refuses other networks it can't take", async () => {
+      const h = harness();
+      await expect(merchantFor(h, { otherNetworks: [8453] })).rejects.toThrow("needs a merchant on Arbitrum One");
+
+      const arbitrum = harness({
+        kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:42161" }],
+        extensions: [],
+        signers: { "eip155:*": [SUBMITTER] },
+      });
+      arbitrum.publicClient.getChainId.mockResolvedValue(42_161);
+      const addresses = { aggregator: AGGREGATOR, portalFactory: PORTAL_FACTORY, vault: VAULT };
+      const broadcaster = { ...arbitrum.broadcaster, estimateBridge: vi.fn() };
+      await expect(merchantFor(arbitrum, { broadcaster, addresses, otherNetworks: [56] })).rejects.toThrow(
+        "chain 56 has no token with signed transfers like yours",
+      );
+      await expect(merchantFor(arbitrum, { broadcaster, addresses, otherNetworks: [8453] })).rejects.toThrow(
+        'the facilitator does not settle "exact" on Base',
+      );
+    });
   });
 });

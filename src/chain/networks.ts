@@ -17,6 +17,8 @@ export interface CurvyCurrency {
   decimals: number;
   /** The token's id in the Curvy vault. */
   vaultTokenId: string;
+  /** The EIP-712 domain of the token's signed transfers (EIP-3009), which x402 `exact` payments use. */
+  eip712?: { name: string; version: string };
 }
 
 /** A Curvy network: the shape of the portal broadcaster's `GET /portal/networks/:chainId`. */
@@ -47,8 +49,21 @@ export const CURVY_NETWORKS: readonly Readonly<CurvyNetwork>[] = deepFreeze([
     vault: "0xcC8d5c60A8fb15Aa3793647eF531f1bA7dF24f00",
     minPortalUsd: 0.5,
     currencies: [
-      { address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", symbol: "USDC", decimals: 6, vaultTokenId: "2" },
-      { address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT", decimals: 6, vaultTokenId: "3" },
+      {
+        address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        symbol: "USDC",
+        decimals: 6,
+        vaultTokenId: "2",
+        eip712: { name: "USD Coin", version: "2" },
+      },
+      {
+        address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+        symbol: "USDT",
+        decimals: 6,
+        vaultTokenId: "3",
+        // USD₮0 has no version(); its domain separator matches version "1".
+        eip712: { name: "USD₮0", version: "1" },
+      },
     ],
   },
   {
@@ -60,7 +75,13 @@ export const CURVY_NETWORKS: readonly Readonly<CurvyNetwork>[] = deepFreeze([
     vault: "0x4a817f82210F17b24577ebAd474E14333A1cB85d",
     minPortalUsd: 0.5,
     currencies: [
-      { address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", symbol: "USDC", decimals: 6, vaultTokenId: "2" },
+      {
+        address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+        symbol: "USDC",
+        decimals: 6,
+        vaultTokenId: "2",
+        eip712: { name: "USDC", version: "2" },
+      },
     ],
   },
 ]);

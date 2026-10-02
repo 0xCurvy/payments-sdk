@@ -1,5 +1,5 @@
 import type { Address, Hex } from "viem";
-import type { X402PaymentRequirements } from "../protocol";
+import type { X402Network, X402PaymentRequirements } from "../protocol";
 
 export type X402PaymentStatus =
   /** 402 issued; waiting for the payer. */
@@ -41,7 +41,14 @@ export interface X402Payment {
   accepts: X402PaymentRequirements[];
   note: X402PaymentNote;
   payer?: Address;
-  /** The facilitator's EIP-3009 transfer to `payTo`. */
+  /**
+   * The merchant's token this payment counts in: the one paid, or for a payment on another network the one it is
+   * bridged into. Set when the payer pays.
+   */
+  token?: Address;
+  /** The network the payer paid on, when not the merchant's: Curvy bridges it over. Set when the payer pays. */
+  paidOn?: X402Network;
+  /** The facilitator's EIP-3009 transfer to `payTo` (on `paidOn` when set). */
   settleTxHash?: Hex;
   /** The portal deployment that shielded the funds. */
   shieldTxHash?: Hex;
