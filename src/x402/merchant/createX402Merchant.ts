@@ -1,5 +1,6 @@
 import type { Address, Hex, PublicClient } from "viem";
 import { createPublicClient, erc20Abi, getAddress, http, isAddress, isHex, parseEventLogs } from "viem";
+import { getCurvyNetwork, resolveToken } from "../../chain/networks";
 import { predictPortalAddress } from "../../chain/predictPortalAddress";
 import { vaultAbi } from "../../contracts";
 import {
@@ -85,13 +86,17 @@ export interface X402MerchantOptions {
   /** JSON-RPC endpoint of the payment chain. Alternatively pass `publicClient`. */
   rpcUrl?: string;
   publicClient?: X402MerchantClient;
-  /** The token you charge in (USDC). It must be registered in the Curvy vault. */
-  token: Address;
+  /**
+   * The token you charge in: a symbol Curvy takes on the chain (`"USDC"`, `"USDT"`) or an address. It must be
+   * registered in the Curvy vault.
+   */
+  token: string;
   /** The token's EIP-712 domain. Read from the contract (`name()`, `version()`) when omitted. */
   tokenDomain?: { name: string; version: string };
   /**
-   * Curvy contract addresses. Discovered from the broadcaster (`GET /portal/networks/:chainId`) when omitted.
-   * Pin them in production so confirmation does not depend on what a service says.
+   * Curvy contract addresses. Built into the SDK for Curvy's networks (Arbitrum One, Ethereum Sepolia); on any
+   * other chain, discovered from the broadcaster (`GET /portal/networks/:chainId`) when omitted. Pass them for such
+   * a chain in production, so confirmation does not depend on what a service says.
    */
   addresses?: Partial<CurvyDeployment>;
   /**
@@ -306,7 +311,6 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
   }
   const autoShield = config.autoShield ?? true;
   const store = config.store ?? createMemoryPaymentStore();
-  const token = getAddress(config.token);
   const merchantOrigin = (() => {
     if (config.merchantOrigin === undefined) return undefined;
     const url = new URL(config.merchantOrigin);
@@ -316,6 +320,7 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
 
   const chainId = await publicClient.getChainId();
   const network = x402Network(chainId);
+  const token = resolveToken(chainId, config.token);
 
   // The facilitator only needs to speak x402 v2 `exact` on this chain; any standard one will do.
   if (facilitator && schemes.includes(EXACT_SCHEME)) {
@@ -330,7 +335,13 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     }
   }
   const recovery: Address = getAddress(config.recovery ?? NO_RECOVERY_ADDRESS);
-  const configured = config.addresses ?? {};
+  // Configured addresses first, then the SDK's own for Curvy's networks; only other chains need the broadcaster's.
+  const builtIn = getCurvyNetwork(chainId);
+  const configured = {
+    aggregator: config.addresses?.aggregator ?? builtIn?.aggregator,
+    portalFactory: config.addresses?.portalFactory ?? builtIn?.portalFactory,
+    vault: config.addresses?.vault ?? builtIn?.vault,
+  };
   const discovered =
     configured.aggregator && configured.portalFactory && configured.vault && config.enforceBroadcasterMinimum === false
       ? undefined

@@ -11,8 +11,9 @@ import {
   TransactionReceiptNotFoundError,
 } from "viem";
 import { isAddress, isAddressEqual } from "viem/utils";
+import { getCurvyNetwork, ROUTED_PAYMENT_CHAIN_ID, ROUTED_PAYMENT_TOLERANCE_BPS } from "../chain/networks";
 import { aggregatorAbi, vaultAbi } from "../contracts";
-import { parsePaymentIntent } from "../intent/parsePaymentIntent";
+import { acceptedTokens, parsePaymentIntent } from "../intent/parsePaymentIntent";
 import type { PaymentIntent } from "../types";
 import { minimumNetAmount } from "./internal/paymentFees";
 import {
@@ -58,8 +59,11 @@ const PAID_WHEN_VALUES: readonly PaidWhen[] = ["shielded", "committed"];
 export interface VerifyPaymentParameters {
   /** Client for the chain the request was created for (`request.chainId`). */
   publicClient: PaymentVerifyClient;
-  /** Aggregator proxy address; only PendingNotes/CommittedNotes it emitted count. */
-  aggregatorAddress: Address;
+  /**
+   * Aggregator proxy address; only PendingNotes/CommittedNotes it emitted count. Defaults to Curvy's aggregator on
+   * `request.chainId`; required on a chain the SDK does not know.
+   */
+  aggregatorAddress?: Address;
   /** The request `createPaymentRequest` returned, as the merchant persisted it server-side. */
   request: PaymentIntent;
   /** Blocks (inclusive of the shield block) required before `paid`. Positive safe integer. */
@@ -82,7 +86,7 @@ export interface VerifyPaymentParameters {
  * - `paid`: correct note, token and amount with enough confirmations (and, with
  *   `paidWhen: "committed"`, in a CommittedNotes batch whose block also has `confirmations` blocks).
  * - `underpaid`: the note pays this request but its net amount is below `minimumNetAmount`.
- * - `wrong_token`: the note pays this request's owner in a different vault token.
+ * - `wrong_token`: the note pays this request's owner in a vault token the request doesn't take.
  */
 export type PaymentStatus = "not_found" | "confirming" | "paid" | "underpaid" | "wrong_token";
 
@@ -94,10 +98,21 @@ export interface VerifiedPayment {
   noteId: bigint;
   /** Vault token id of the note. */
   vaultTokenId: bigint;
+  /** Which of the request's tokens the note is in (`request.token` or one of `request.tokens`); null for `wrong_token`. */
+  token: Address | null;
   /** Amount of the note, after vault fees. */
   netAmount: bigint;
-  /** Net amount a gross deposit of `request.amount` yields under the fees at the shield block. */
+  /**
+   * The least the note may carry: what a gross deposit of `request.amount` yields under the fees at the shield block,
+   * less up to `ROUTED_PAYMENT_TOLERANCE_BPS` of it on `ROUTED_PAYMENT_CHAIN_ID`, where a payment may have been
+   * bridged from another network.
+   */
   minimumNetAmount: bigint;
+  /**
+   * How much less the note carries than the full `request.amount` would have yielded: what bridging the payment from
+   * another network cost the shop. 0 when it was paid in full.
+   */
+  shortfall: bigint;
   /** Whether the note was shielded through a Curvy portal (which also pays `portalDeployment`). */
   portalShield: boolean;
   /**
@@ -181,7 +196,14 @@ function parseParameters(parameters: VerifyPaymentParameters): ParsedParameters 
       cause: error,
     });
   }
-  if (typeof parameters.aggregatorAddress !== "string" || !isAddress(parameters.aggregatorAddress, { strict: false })) {
+  const aggregatorAddress = parameters.aggregatorAddress ?? getCurvyNetwork(request.chainId)?.aggregator;
+  if (aggregatorAddress === undefined) {
+    throw new PaymentVerificationError(
+      "INVALID_INPUT",
+      `aggregatorAddress is required: chain ${request.chainId} is not a Curvy network this SDK knows`,
+    );
+  }
+  if (typeof aggregatorAddress !== "string" || !isAddress(aggregatorAddress, { strict: false })) {
     throw new PaymentVerificationError("INVALID_INPUT", "aggregatorAddress must be an address");
   }
   if (!Number.isSafeInteger(parameters.confirmations) || parameters.confirmations <= 0) {
@@ -209,7 +231,7 @@ function parseParameters(parameters: VerifyPaymentParameters): ParsedParameters 
   }
   return {
     publicClient: parameters.publicClient,
-    aggregatorAddress: parameters.aggregatorAddress,
+    aggregatorAddress,
     request,
     confirmations: BigInt(parameters.confirmations),
     paidWhen,
@@ -370,24 +392,31 @@ function shieldBlockReader({ publicClient, aggregatorAddress, request }: ParsedP
       ),
     );
   return {
-    tokenId: (blockNumber: bigint) =>
-      cached(`tokenId:${blockNumber}`, async () =>
-        readAtBlock(
-          publicClient.readContract({
-            address: await vault(blockNumber),
-            abi: vaultAbi,
-            functionName: "getTokenId",
-            args: [request.token],
-            blockNumber,
-          }),
-          "getTokenId",
-          blockNumber,
-        ).catch((error: unknown) => {
-          // getTokenId reverts TokenNotRegistered: the request token has no vault id, so no note can match it.
-          if (isContractRevert(error)) return null;
-          throw error;
-        }),
-      ),
+    /** Each of the request's tokens with its vault id; null for a token the vault doesn't know. */
+    tokenIds: (blockNumber: bigint) =>
+      cached(`tokenIds:${blockNumber}`, async () => {
+        const vaultAddress = await vault(blockNumber);
+        return Promise.all(
+          acceptedTokens(request).map(async (token) => ({
+            token,
+            id: await readAtBlock(
+              publicClient.readContract({
+                address: vaultAddress,
+                abi: vaultAbi,
+                functionName: "getTokenId",
+                args: [token],
+                blockNumber,
+              }),
+              "getTokenId",
+              blockNumber,
+            ).catch((error: unknown) => {
+              // getTokenId reverts TokenNotRegistered: the token has no vault id, so no note can be in it.
+              if (isContractRevert(error)) return null;
+              throw error;
+            }),
+          })),
+        );
+      }),
     depositFee: (blockNumber: bigint) =>
       cached(`depositFee:${blockNumber}`, async () =>
         readAtBlock(
@@ -445,8 +474,8 @@ async function assessNote(
   const { request } = parameters;
   const blockNumber = receipt.blockNumber;
   const portalEmitters = shieldPortalEmitters(receipt.logs, BigInt(request.ownerHash));
-  const [expectedTokenId, depositFee, gasFees, portalFactory] = await Promise.all([
-    state.tokenId(blockNumber),
+  const [tokenIds, depositFee, gasFees, portalFactory] = await Promise.all([
+    state.tokenIds(blockNumber),
     state.depositFee(blockNumber),
     // The vault charged the note's own token's gas fees, so the minimum uses them.
     state.gasFees(blockNumber, note.token),
@@ -455,15 +484,18 @@ async function assessNote(
 
   const portalShield =
     portalFactory !== null && portalEmitters.some((emitter) => isAddressEqual(emitter, portalFactory));
-  const minimum = minimumNetAmount(
-    BigInt(request.amount),
-    {
-      depositFee: BigInt(depositFee),
-      pendingNoteCommitment: gasFees.pendingNoteCommitment,
-      portalDeployment: gasFees.portalDeployment,
-    },
-    portalShield,
-  );
+  const fees = {
+    depositFee: BigInt(depositFee),
+    pendingNoteCommitment: gasFees.pendingNoteCommitment,
+    portalDeployment: gasFees.portalDeployment,
+  };
+  const amount = BigInt(request.amount);
+  const full = minimumNetAmount(amount, fees, portalShield);
+  // On the routed network a payment may have been bridged from another one, and arrive short by what that cost.
+  const tolerance =
+    request.chainId === ROUTED_PAYMENT_CHAIN_ID ? (amount * BigInt(ROUTED_PAYMENT_TOLERANCE_BPS)) / 10_000n : 0n;
+  const minimum = minimumNetAmount(amount - tolerance, fees, portalShield);
+  const token = tokenIds.find((entry) => entry.id !== null && entry.id === note.token)?.token ?? null;
   const confirmations = latestBlock >= blockNumber ? latestBlock - blockNumber + 1n : 0n;
   const payment = {
     txHash: receipt.transactionHash,
@@ -471,11 +503,13 @@ async function assessNote(
     confirmations,
     noteId: note.noteId,
     vaultTokenId: note.token,
+    token,
     netAmount: note.netAmount,
     minimumNetAmount: minimum,
+    shortfall: note.netAmount < full ? full - note.netAmount : 0n,
     portalShield,
   };
-  if (expectedTokenId === null || note.token !== expectedTokenId) return { status: "wrong_token", payment };
+  if (token === null) return { status: "wrong_token", payment };
   if (note.netAmount < minimum) return { status: "underpaid", payment };
   if (confirmations < parameters.confirmations) return { status: "confirming", payment };
   return { status: "paid", payment };
@@ -565,8 +599,10 @@ async function assessPayment(
  * A note pays the request only when its noteId recomputes as
  * `Poseidon(request.ownerHash, netAmount, token)` and it carries the request's R and viewTag,
  * in a PendingNotes log emitted by `aggregatorAddress`. The token must be the vault id of
- * `request.token`, and the net amount must reach what `request.amount` yields after the vault's
- * deposit fee and gas fees at the shield block (overpayment is accepted).
+ * `request.token` or one of `request.tokens`, and the net amount must reach what `request.amount`
+ * yields after the vault's deposit fee and gas fees at the shield block (overpayment is accepted).
+ * On `ROUTED_PAYMENT_CHAIN_ID` it may fall short by up to `ROUTED_PAYMENT_TOLERANCE_BPS` of the
+ * amount: what bridging a payment made on another network may cost the shop.
  *
  * With `paidWhen: "committed"` (see {@link PaidWhen}), a note that would be `paid` stays
  * `confirming` until it appears in a CommittedNotes batch from the aggregator whose block also

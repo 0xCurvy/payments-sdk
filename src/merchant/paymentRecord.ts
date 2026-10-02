@@ -1,7 +1,7 @@
 import type { Hex } from "viem";
 import { parseSignedPaymentIntent } from "../intent/parseSignedPaymentIntent";
 import type { SignedPaymentIntent } from "../types";
-import { decimal, exactKeys, record, string } from "../utils/validation";
+import { address, decimal, exactKeys, record, requiredAndOptionalKeys, string } from "../utils/validation";
 import type { PaymentStatus, PaymentVerification, VerifiedPayment } from "./verifyPayment";
 
 /** Version of the stored value `serializePaymentRecord` writes. `parsePaymentRecord` refuses any other. */
@@ -35,6 +35,8 @@ const VERIFIED_PAYMENT_KEYS = [
   "committed",
   "siblingNoteIds",
 ] as const;
+/** Fields later releases added to version 1; records written before them still read, with the default. */
+const VERIFIED_PAYMENT_OPTIONAL_KEYS = ["shortfall", "token"] as const;
 const PAYMENT_STATUSES: readonly PaymentStatus[] = ["not_found", "confirming", "paid", "underpaid", "wrong_token"];
 const TX_HASH = /^0x[0-9a-f]{64}$/i;
 
@@ -45,8 +47,10 @@ function serializeVerifiedPayment(payment: VerifiedPayment) {
     confirmations: payment.confirmations.toString(),
     noteId: payment.noteId.toString(),
     vaultTokenId: payment.vaultTokenId.toString(),
+    token: payment.token,
     netAmount: payment.netAmount.toString(),
     minimumNetAmount: payment.minimumNetAmount.toString(),
+    shortfall: payment.shortfall.toString(),
     portalShield: payment.portalShield,
     committed: payment.committed,
     siblingNoteIds: payment.siblingNoteIds.map((noteId) => noteId.toString()),
@@ -64,7 +68,7 @@ function booleanField(value: unknown, label: string): boolean {
 
 function parseVerifiedPayment(value: unknown, label: string): VerifiedPayment {
   const input = record(value, label);
-  exactKeys(input, VERIFIED_PAYMENT_KEYS, label);
+  requiredAndOptionalKeys(input, VERIFIED_PAYMENT_KEYS, VERIFIED_PAYMENT_OPTIONAL_KEYS, label);
   const txHash = string(input.txHash, `${label}.txHash`);
   if (!TX_HASH.test(txHash)) throw new Error(`${label}.txHash must be a 32-byte hex hash`);
   if (!Array.isArray(input.siblingNoteIds)) throw new Error(`${label}.siblingNoteIds must be an array`);
@@ -74,8 +78,10 @@ function parseVerifiedPayment(value: unknown, label: string): VerifiedPayment {
     confirmations: bigintField(input.confirmations, `${label}.confirmations`),
     noteId: bigintField(input.noteId, `${label}.noteId`),
     vaultTokenId: bigintField(input.vaultTokenId, `${label}.vaultTokenId`),
+    token: input.token === undefined || input.token === null ? null : address(input.token, `${label}.token`),
     netAmount: bigintField(input.netAmount, `${label}.netAmount`),
     minimumNetAmount: bigintField(input.minimumNetAmount, `${label}.minimumNetAmount`),
+    shortfall: input.shortfall === undefined ? 0n : bigintField(input.shortfall, `${label}.shortfall`),
     portalShield: booleanField(input.portalShield, `${label}.portalShield`),
     committed: booleanField(input.committed, `${label}.committed`),
     siblingNoteIds: input.siblingNoteIds.map((noteId, index) =>

@@ -13,6 +13,11 @@ export type BuildPaymentRequestParameters = RecipientParameters & {
   checkoutCompletePath?: string;
   /** What the buyer is paying for, shown at checkout and on their receipt (at most 120 characters). */
   description?: string;
+  /**
+   * Every token the payment may be made in, when more than one: `token` first, then the others, all with `token`'s
+   * decimals. Omit it to take only `token`.
+   */
+  tokens?: Address[];
   /** Request lifetime: a positive safe integer of at most 86400 (24 h). */
   ttlSeconds: number;
 };
@@ -25,6 +30,11 @@ export type CreatePaymentRequestParameters = RecipientParameters & {
   checkoutCompletePath?: string;
   /** What the buyer is paying for, shown at checkout and on their receipt (at most 120 characters). */
   description?: string;
+  /**
+   * Every token the payment may be made in, when more than one: `token` first, then the others, all with `token`'s
+   * decimals. Omit it to take only `token`.
+   */
+  tokens?: Address[];
   /** Request lifetime: a positive safe integer of at most 86400 (24 h). Default 600. */
   ttlSeconds?: number;
 };
@@ -50,6 +60,7 @@ export async function buildPaymentRequest(parameters: BuildPaymentRequestParamet
     ...(parameters.checkoutCompletePath === undefined ? {} : { checkoutCompletePath: parameters.checkoutCompletePath }),
     expiry,
     ...(parameters.description === undefined ? {} : { description: parameters.description }),
+    ...(parameters.tokens === undefined || parameters.tokens.length < 2 ? {} : { tokens: parameters.tokens }),
   });
 }
 

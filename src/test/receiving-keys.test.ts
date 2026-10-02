@@ -182,14 +182,19 @@ describe("receiving keys", () => {
 });
 
 describe("receiving keys as a payment recipient", () => {
-  const config = { chainId: 31_337, merchantOrigin: "https://merchant.example", confirmations: 1 };
+  const config = {
+    environment: "testnet" as const,
+    network: { chainId: 31_337 },
+    merchantOrigin: "https://merchant.example",
+    confirmations: 1,
+  };
 
   it("initializes with receivingKeys or recipient", async () => {
     for (const sdk of [
       initialize({ ...config, receivingKeys: DEMO_RECEIVING_KEYS }),
       initialize({ ...config, recipient: DEMO_RECIPIENT }),
     ]) {
-      const request = await sdk.createPaymentRequest({ amount: 10_000n, token: TOKEN });
+      const request = await sdk.createPaymentRequest({ amount: 10_000n, tokens: [TOKEN] });
       expect(request.amount).toBe("10000");
       expect(request.ownerHash).toMatch(/^[1-9]\d*$/);
     }

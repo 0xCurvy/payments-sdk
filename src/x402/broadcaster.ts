@@ -1,9 +1,9 @@
 import type { Address, Hex } from "viem";
 import { getAddress, isAddress, isHex } from "viem";
+import type { CurvyNetwork } from "../chain/networks";
 import { record } from "../utils/validation";
 import { CURVY_BROADCASTER_URL } from "./defaults";
 import { parseCurvyDeployment, parseUint } from "./parse";
-import type { CurvyDeployment } from "./protocol";
 
 export type BroadcasterHeaders =
   | Record<string, string>
@@ -68,24 +68,7 @@ export interface PortalPaymentStatus {
 /** Portal states the broadcaster never leaves; the funds will not be shielded. */
 export const TERMINAL_PORTAL_FAILURES: ReadonlySet<string> = new Set(["compliance_failed", "expired", "failed"]);
 
-/** A token the broadcaster shields on a network. */
-export interface CurvyCurrency {
-  address: Address;
-  symbol: string;
-  decimals: number;
-  /** The token's id in the Curvy vault. */
-  vaultTokenId: string;
-}
-
-/** `GET /portal/networks/:chainId`. */
-export interface CurvyNetwork extends CurvyDeployment {
-  chainId: number;
-  name?: string;
-  testnet?: boolean;
-  /** Portals worth less than this many USD are failed instead of shielded. */
-  minPortalUsd?: number;
-  currencies: CurvyCurrency[];
-}
+export type { CurvyCurrency, CurvyNetwork } from "../chain/networks";
 
 export interface BroadcasterClient {
   readonly url: string;

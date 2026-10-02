@@ -23,6 +23,12 @@ export interface PaymentIntent {
    * the checkout link's fragment and is not part of what checkout registers with Curvy's payment service.
    */
   description?: string;
+  /**
+   * Every token the shop takes for this payment on `chainId`, when it takes more than one: `token` first, then the
+   * others (e.g. USDC, then USDT). They share `token`'s decimals, so `amount` means the same in each. Absent when the
+   * shop takes only `token`. Signed with the payment, so nobody on the way can add a token.
+   */
+  tokens?: Address[];
 }
 
 export interface SignedPaymentIntent {

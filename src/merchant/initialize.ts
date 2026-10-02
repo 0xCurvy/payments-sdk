@@ -1,4 +1,5 @@
-﻿import type { Address } from "viem";
+﻿import { type Address, getAddress, isAddress } from "viem";
+import { type CurvyEnvironment, getCurvyNetwork, getDefaultCurvyNetwork, resolveTokens } from "../chain/networks";
 import type { PaymentIntent } from "../types";
 import {
   DEFAULT_CHECKOUT_COMPLETE_PATH,
@@ -19,7 +20,22 @@ import {
  * public keys as three strings. Pass exactly one.
  */
 export type PaymentSDKConfig = RecipientParameters & {
-  chainId: number;
+  /**
+   * Where the shop gets paid: `"mainnet"` (Arbitrum One, real money) or `"testnet"` (Ethereum Sepolia, test
+   * money). The SDK knows Curvy's contracts there.
+   */
+  environment: CurvyEnvironment;
+  /**
+   * A network other than the environment's: a staging or local chain, or a Curvy network this SDK version does
+   * not know yet. `aggregatorAddress` is required on a chain the SDK does not know.
+   */
+  network?: { chainId: number; aggregatorAddress?: Address };
+  /**
+   * The tokens the shop takes: symbols Curvy takes on the network (`"USDC"`, `"USDT"`) or addresses, the first one
+   * preferred. Default: all of Curvy's (USDC and USDT on mainnet, USDC on testnet). On mainnet the buyer may pay in
+   * any of them on any network where Curvy has a payment address; Curvy bridges it to the shop's network.
+   */
+  tokens?: string[];
   merchantOrigin: string;
   confirmations: number;
   /**
@@ -35,17 +51,49 @@ export type PaymentSDKConfig = RecipientParameters & {
 export type BoundVerifyPaymentParameters = Omit<VerifyPaymentParameters, "confirmations" | "paidWhen">;
 
 export interface PaymentSDK {
-  /** `description` says what the buyer is paying for; checkout shows it and prints it on their receipt. */
-  createPaymentRequest(parameters: { amount: bigint; token: Address; description?: string }): Promise<PaymentIntent>;
-  /** `verifyPayment` with `confirmations` and `paidWhen` bound from `initialize`. */
+  /** The chain requests are made for and payments are checked on. Your RPC endpoint must serve it. */
+  readonly chainId: number;
+  /** The tokens requests take unless one names others; empty on a chain the SDK does not know, unless configured. */
+  readonly tokens: readonly Address[];
+  /** The aggregator payments are checked against; `undefined` on a chain the SDK does not know, unless configured. */
+  readonly aggregatorAddress: Address | undefined;
+  /**
+   * `amount` is in the tokens' base units (USDC and USDT: 6 decimals). `tokens` default to the configured ones.
+   * `description` says what the buyer is paying for; checkout shows it and prints it on their receipt.
+   */
+  createPaymentRequest(parameters: { amount: bigint; tokens?: string[]; description?: string }): Promise<PaymentIntent>;
+  /** `verifyPayment` with the aggregator, `confirmations` and `paidWhen` bound from `initialize`. */
   verifyPayment(parameters: BoundVerifyPaymentParameters): Promise<PaymentVerification>;
+}
+
+/** The chain and aggregator: the environment's Curvy network, or the `network` override checked against it. */
+function resolveNetwork(config: PaymentSDKConfig): { chainId: number; aggregatorAddress: Address | undefined } {
+  const preset = getDefaultCurvyNetwork(config.environment);
+  if (config.network === undefined) return { chainId: preset.chainId, aggregatorAddress: preset.aggregator };
+
+  const { chainId, aggregatorAddress } = config.network;
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw new Error("network.chainId must be a positive safe integer");
+  }
+  if (aggregatorAddress !== undefined && !isAddress(aggregatorAddress, { strict: false })) {
+    throw new Error("network.aggregatorAddress must be an address");
+  }
+  const known = getCurvyNetwork(chainId);
+  if (known && known.testnet !== (config.environment === "testnet")) {
+    throw new Error(
+      `chain ${chainId} is a ${known.testnet ? "testnet" : "mainnet"} network, not ${config.environment}`,
+    );
+  }
+  return {
+    chainId,
+    aggregatorAddress: aggregatorAddress === undefined ? known?.aggregator : getAddress(aggregatorAddress),
+  };
 }
 
 export function initialize(config: PaymentSDKConfig): PaymentSDK {
   const recipient = resolveRecipient(config);
-  if (!Number.isSafeInteger(config.chainId) || config.chainId <= 0) {
-    throw new Error("chainId must be a positive safe integer");
-  }
+  const { chainId, aggregatorAddress } = resolveNetwork(config);
+  const defaultTokens = resolveTokens(chainId, config.tokens);
   if (!Number.isSafeInteger(config.confirmations) || config.confirmations <= 0) {
     throw new Error("confirmations must be a positive safe integer");
   }
@@ -91,12 +139,18 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
   })();
 
   return {
-    createPaymentRequest(parameters) {
+    chainId,
+    tokens: defaultTokens,
+    aggregatorAddress,
+    async createPaymentRequest(parameters) {
+      const tokens = parameters.tokens === undefined ? defaultTokens : resolveTokens(chainId, parameters.tokens);
+      if (tokens.length === 0) throw new Error(`tokens are required: chain ${chainId} has no default tokens`);
       return buildPaymentRequest({
         recipient,
         amount: parameters.amount,
-        token: parameters.token,
-        chainId: config.chainId,
+        token: tokens[0],
+        tokens,
+        chainId,
         merchantOrigin: resolvedMerchantOrigin,
         checkoutCompletePath:
           resolvedCheckoutCompletePath === DEFAULT_CHECKOUT_COMPLETE_PATH ? undefined : resolvedCheckoutCompletePath,
@@ -105,7 +159,12 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
       });
     },
     verifyPayment(parameters) {
-      return verifyStoredPayment({ ...parameters, confirmations: config.confirmations, paidWhen: resolvedPaidWhen });
+      return verifyStoredPayment({
+        ...parameters,
+        aggregatorAddress: parameters.aggregatorAddress ?? aggregatorAddress,
+        confirmations: config.confirmations,
+        paidWhen: resolvedPaidWhen,
+      });
     },
   };
 }

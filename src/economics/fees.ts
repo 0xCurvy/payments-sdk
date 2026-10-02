@@ -1,4 +1,5 @@
 import type { Address } from "viem";
+import { getCurvyNetwork } from "../chain/networks";
 import { vaultAbi } from "../contracts";
 import type { PaymentReadClient } from "../types";
 
@@ -97,7 +98,10 @@ export function minimumPaymentAmount({ fees, rail, minNetAmount = 1n }: MinimumP
 
 export interface ReadChainFeesParameters {
   publicClient: PaymentReadClient;
-  vaultAddress: Address;
+  /** The Curvy vault. Defaults to Curvy's vault on `chainId`; pass one of the two. */
+  vaultAddress?: Address;
+  /** The chain the client reads, to find Curvy's vault on it when `vaultAddress` is omitted. */
+  chainId?: number;
   /** ERC-20 the customer pays with; resolved to the vault's token id. */
   token: Address;
   /** Read fees as of a past block, e.g. the block that shielded a payment. */
@@ -107,10 +111,19 @@ export interface ReadChainFeesParameters {
 /** Read the vault's current fees for `token`. */
 export async function readChainFees({
   publicClient,
-  vaultAddress,
+  vaultAddress: configuredVault,
+  chainId,
   token,
   blockNumber,
 }: ReadChainFeesParameters): Promise<ChainFees> {
+  const vaultAddress = configuredVault ?? (chainId === undefined ? undefined : getCurvyNetwork(chainId)?.vault);
+  if (vaultAddress === undefined) {
+    throw new Error(
+      chainId === undefined
+        ? "pass vaultAddress, or the chainId of a Curvy network"
+        : `vaultAddress is required: chain ${chainId} is not a Curvy network this SDK knows`,
+    );
+  }
   const tokenId = await publicClient.readContract({
     address: vaultAddress,
     abi: vaultAbi,

@@ -2,13 +2,14 @@ import type { TypedData, TypedDataDomain } from "viem";
 import type { PaymentIntent } from "../types";
 
 /**
- * The EIP-712 payload a checkout signer signs: a plain `PaymentIntent`, or a `DescribedPaymentIntent` when the intent
- * carries a description. Typed loosely so one signer adapter (viem, ethers, a wallet, a KMS) handles both.
+ * The EIP-712 payload a checkout signer signs: a plain `PaymentIntent`, a `DescribedPaymentIntent` when the intent
+ * carries a description, or a `MultiTokenPaymentIntent` when it takes more than one token. Typed loosely so one signer
+ * adapter (viem, ethers, a wallet, a KMS) handles all three.
  */
 export interface PaymentIntentTypedData {
   domain: TypedDataDomain;
   types: TypedData;
-  primaryType: "PaymentIntent" | "DescribedPaymentIntent";
+  primaryType: "PaymentIntent" | "DescribedPaymentIntent" | "MultiTokenPaymentIntent";
   message: Record<string, unknown>;
 }
 
@@ -36,6 +37,19 @@ export const describedPaymentIntentTypes = {
   DescribedPaymentIntent: [...paymentIntentFields, { name: "description", type: "string" }],
 } as const;
 
+/**
+ * A payment intent the shop takes in more than one token (`tokens`, `token` first). Its own type, so a token can be
+ * neither added to a signed intent nor the list stripped from one. `description` is always present here (empty when
+ * the intent has none).
+ */
+export const multiTokenPaymentIntentTypes = {
+  MultiTokenPaymentIntent: [
+    ...paymentIntentFields,
+    { name: "description", type: "string" },
+    { name: "tokens", type: "address[]" },
+  ],
+} as const;
+
 /** Build the canonical EIP-712 payload for a payment intent. */
 export function buildPaymentIntentTypedData(intent: PaymentIntent): PaymentIntentTypedData {
   const domain = { name: "Curvy Payments", version: "1", chainId: intent.chainId } as const;
@@ -52,6 +66,15 @@ export function buildPaymentIntentTypedData(intent: PaymentIntent): PaymentInten
     checkoutCompletePath: intent.checkoutCompletePath,
     expiry: BigInt(intent.expiry),
   };
+
+  if (intent.tokens !== undefined) {
+    return {
+      domain,
+      types: multiTokenPaymentIntentTypes,
+      primaryType: "MultiTokenPaymentIntent",
+      message: { ...message, description: intent.description ?? "", tokens: intent.tokens },
+    };
+  }
 
   if (intent.description === undefined) {
     return { domain, types: paymentIntentTypes, primaryType: "PaymentIntent", message };

@@ -189,7 +189,8 @@ describe("payments", () => {
       expect(() =>
         initialize({
           recipient: RECIPIENT,
-          chainId: 31_337,
+          environment: "testnet",
+          network: { chainId: 31_337 },
           merchantOrigin: "https://merchant.example",
           confirmations: CONFIRMATIONS,
           ttlSeconds,
@@ -205,12 +206,13 @@ describe("payments", () => {
     const atCap = await createPaymentRequest({ ...base, ttlSeconds: MAX_PAYMENT_REQUEST_TTL_SECONDS });
     const sdk = initialize({
       recipient: RECIPIENT,
-      chainId: 31_337,
+      environment: "testnet",
+      network: { chainId: 31_337 },
       merchantOrigin: "https://merchant.example",
       confirmations: CONFIRMATIONS,
       ttlSeconds: MAX_PAYMENT_REQUEST_TTL_SECONDS,
     });
-    const fromSdk = await sdk.createPaymentRequest({ amount: 10_000n, token: TOKEN });
+    const fromSdk = await sdk.createPaymentRequest({ amount: 10_000n, tokens: [TOKEN] });
     vi.useRealTimers();
     expect(atCap.expiry).toBe(1_000 + 86_400);
     expect(fromSdk.expiry).toBe(1_000 + 86_400);
@@ -240,16 +242,17 @@ describe("payments", () => {
     vi.setSystemTime(new Date(1_000_000));
     const sdk = initialize({
       recipient: RECIPIENT,
-      chainId: 31_337,
+      environment: "testnet",
+      network: { chainId: 31_337 },
       merchantOrigin: "https://merchant.example",
       confirmations: CONFIRMATIONS,
       ttlSeconds: 900,
     });
     const intent = await sdk.createPaymentRequest({
       amount: 10_000n,
-      token: TOKEN,
+      tokens: [TOKEN],
     });
-    const described = await sdk.createPaymentRequest({ amount: 10_000n, token: TOKEN, description: "Order #1048" });
+    const described = await sdk.createPaymentRequest({ amount: 10_000n, tokens: [TOKEN], description: "Order #1048" });
     vi.useRealTimers();
     expect(intent.expiry).toBe(1_900);
     expect(intent.merchantOrigin).toBe("https://merchant.example");
@@ -261,13 +264,14 @@ describe("payments", () => {
     vi.setSystemTime(new Date(2_000_000));
     const sdk = initialize({
       recipient: RECIPIENT,
-      chainId: 31_337,
+      environment: "testnet",
+      network: { chainId: 31_337 },
       merchantOrigin: "https://merchant.example",
       confirmations: CONFIRMATIONS,
     });
     const intent = await sdk.createPaymentRequest({
       amount: 10_000n,
-      token: TOKEN,
+      tokens: [TOKEN],
     });
     vi.useRealTimers();
     expect(intent.expiry).toBe(2_000 + DEFAULT_PAYMENT_REQUEST_TTL_SECONDS);

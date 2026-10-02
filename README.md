@@ -19,12 +19,12 @@ The merchant signing key must stay on the backend. A merchant frontend asks its 
 
 ## Public browser-safe API
 
-- Request lifecycle from `/intent`: `parsePaymentIntent`, `parseSignedPaymentIntent`, `signPaymentIntent`, and `verifyPaymentIntent`.
+- Request lifecycle from `/intent`: `parsePaymentIntent`, `parseSignedPaymentIntent`, `signPaymentIntent`, `verifyPaymentIntent`, and `acceptedTokens`.
 - Transport from `/transport`: `encodePaymentIntentFragment`, `decodePaymentIntentFragment`, `buildCheckoutUrl`, `buildCheckoutCompleteUrl`, and `buildCheckoutRetryUrl` (returns the buyer to the completion page as `#retry=<ephemeralKeyX>` so the merchant can issue a fresh attempt).
 - Merchant signer discovery from `/merchant/keys`: `buildMerchantKeySet` and `parseMerchantKeySet`.
 - Receiving keys from `/merchant/keys` (and the root): `encodeReceivingKeys(recipient)` and `parseReceivingKeys(value)`, plus `RECEIVING_KEYS_VERSION` (`"01"`). See [Receiving keys](#receiving-keys).
 - Chain helpers from `/chain`: `findNoteInReceipt`, which returns `{ noteId, netAmount, token }` (`token` is the vault token id) or `null`, and `predictPortalAddress` (**internal and unstable**: for Curvy's checkout; its inputs change when Curvy migrates portal factories, so merchants do not call it). `findNoteInReceipt` matches only the payment reference `R`, so it is a discovery hint. It does **not** prove a payment.
-- Typed data: `buildPaymentIntentTypedData` and `paymentIntentTypes`. The domain is `{ name: "Curvy Payments", version: "1", chainId }`.
+- Typed data: `buildPaymentIntentTypedData`, `paymentIntentTypes`, `describedPaymentIntentTypes` and `multiTokenPaymentIntentTypes`. The domain is `{ name: "Curvy Payments", version: "1", chainId }`.
 - Fees from `/economics` (and the root): `readChainFees`, `feeBreakdown`, `quotePayment` and `minimumPaymentAmount`.
 - Contract ABIs: `aggregatorAbi`, `portalFactoryAbi`, `vaultAbi`, and `pendingNotesAbi`, also available from `@0xcurvy/payments-sdk/contracts`.
 - Constants: `DEFAULT_CHECKOUT_COMPLETE_PATH` (`/checkout/complete`), `DEFAULT_PAYMENT_REQUEST_TTL_SECONDS` (`600`) and `MAX_PAYMENT_REQUEST_TTL_SECONDS` (`86400`).
@@ -34,7 +34,7 @@ The merchant signing key must stay on the backend. A merchant frontend asks its 
 Checkout requests are signed by a key used for nothing else: it holds no funds, pays no gas and is independent of any wallet or Curvy key. Create one on the backend:
 
 ```sh
-npx @0xcurvy/payments-sdk@0.2.0-rc.1 create-signer [--out <file>]
+npx @0xcurvy/payments-sdk@0.2.0-rc.2 create-signer [--out <file>]
 ```
 
 It prints the public address and writes the private key to an owner-only file (default `curvy-checkout-signer.secret.json`), refusing to replace an existing one. Move the key into your secret store and publish the address with `buildMerchantKeySet`. In code, `generateCheckoutSigningKey()` from `/merchant/keys` returns `{ privateKey, address }`. A KMS or HSM can hold the key instead: pass your own signer function to `signPaymentIntent`.
@@ -44,7 +44,7 @@ It prints the public address and writes the private key to an owner-only file (d
 Install the Rust core next to the payments SDK in the backend package. It is an optional peer, so browser-only consumers do not pull the WASM package. Pin it: the npm `latest` tag of `@0xcurvy/rs-core-wasm` does not match the peer version.
 
 ```sh
-pnpm add @0xcurvy/payments-sdk@0.2.0-rc.1 @0xcurvy/rs-core-wasm@0.1.0-rc.4
+pnpm add @0xcurvy/payments-sdk@0.2.0-rc.2 @0xcurvy/rs-core-wasm@0.1.0-rc.4
 ```
 
 Bind the SDK settings once. Then, for every checkout, create a request, store it, sign it and redirect:
@@ -55,8 +55,9 @@ import { initialize, serializePaymentRecord } from "@0xcurvy/payments-sdk/mercha
 import { buildCheckoutUrl } from "@0xcurvy/payments-sdk/transport";
 
 const sdk = initialize({
+  environment: "mainnet", // or "testnet"; required, so nobody takes real money or tests by accident
   receivingKeys: process.env.CURVY_PAYMENTS_PUBLIC_KEY!, // the "01…" value from the web app's Payments setup
-  chainId,
+  // optional: tokens: ["USDC"] to take only USDC (default: USDC and USDT on mainnet), or token addresses
   merchantOrigin, // e.g. "https://shop.example"
   confirmations: 12,
   paidWhen: "shielded", // default; "committed" also waits until the note is spendable
@@ -65,12 +66,45 @@ const sdk = initialize({
 });
 
 const fromBlock = await publicClient.getBlockNumber();
-const request = await sdk.createPaymentRequest({ amount, token, description: "Order #1048 · Blue hour print" });
+// amount in the tokens' base units: 4 USDC (or USDT) is 4_000_000n
+const request = await sdk.createPaymentRequest({ amount, description: "Order #1048 · Blue hour print" });
 const payment = await signPaymentIntent(request, (typedData) => merchantSigner.signTypedData(typedData));
 // One opaque value per attempt, in your database; never only a cookie.
 await saveAttempt({ orderId, record: serializePaymentRecord({ payment, fromBlock, verification: null }) });
-const checkoutUrl = buildCheckoutUrl(process.env.CHECKOUT_URL!, payment); // e.g. https://app.curvy.dev/checkout
+const checkoutUrl = buildCheckoutUrl(payment); // Curvy's checkout page, https://app.curvy.box/checkout
 ```
+
+### Networks
+
+`environment` picks the network the shop is paid on, and the SDK knows Curvy's contracts there:
+
+| `environment` | Network | Tokens |
+| --- | --- | --- |
+| `"mainnet"` | Arbitrum One (`42161`), real money | USDC and USDT |
+| `"testnet"` | Ethereum Sepolia (`11155111`), test money | USDC |
+
+The addresses are built into the SDK (`CURVY_NETWORKS`, `getCurvyNetwork`, `getDefaultCurvyNetwork`) rather than read from a Curvy service at runtime, because whoever controls the aggregator address decides what counts as a payment. `sdk.chainId`, `sdk.tokens` and `sdk.aggregatorAddress` show what was chosen; your RPC endpoint must serve `sdk.chainId`.
+
+Any other chain works with `network`: a staging or local deployment, or a Curvy network this SDK version does not know yet. Name its aggregator, give tokens by address, and pass your checkout page to `buildCheckoutUrl(checkoutUrl, payment)`:
+
+```ts
+initialize({ environment: "testnet", network: { chainId: 31337, aggregatorAddress }, tokens: [tokenAddress], ... });
+```
+
+A known chain must match the environment: `environment: "mainnet"` with Sepolia's chain id throws.
+
+### Tokens and payments from other networks
+
+A shop takes every stablecoin Curvy takes on its network unless it names fewer: USDC and USDT on mainnet, USDC on testnet. The amount means the same in each (both have 6 decimals). `tokens` narrows it, for every request or one:
+
+```ts
+initialize({ environment: "mainnet", tokens: ["USDC"], ... }); // only USDC
+sdk.createPaymentRequest({ amount, tokens: ["USDT", "USDC"] }); // this request: USDT first
+```
+
+A request that takes more than one token lists them in `intent.tokens` (the first is `intent.token`) and is signed as its own EIP-712 type, `MultiTokenPaymentIntent`, so no token can be added on the way. A request with one token is signed exactly as before. `acceptedTokens(intent)` returns the list either way.
+
+On mainnet the buyer may also pay in one of those tokens on any network where Curvy has a payment address (Base, Ethereum, Optimism, Polygon, BNB Chain and others). Curvy bridges the same token to Arbitrum One, never swaps it, and the buyer always pays your price. **You absorb what bridging costs, like a card fee**: `verifyPayment` counts a payment on Arbitrum One up to 3% short (`ROUTED_PAYMENT_TOLERANCE_BPS`) as `paid`, and reports what it cost you as `payment.shortfall`. Checkout offers a network only when its bridge is expected to cost less than that. `payment.token` says which of your tokens the payment arrived in.
 
 ### Receiving keys
 
@@ -89,8 +123,7 @@ Confirm the payment on the backend with the stored request. Use the return-URL h
 ```ts
 const record = parsePaymentRecord(storedValue); // from /merchant
 const { status, payment: verified } = await sdk.verifyPayment({
-  publicClient,
-  aggregatorAddress,
+  publicClient, // on sdk.chainId
   request: record.payment.intent, // the stored request
   txHash, // optional hint; omit it and pass record.fromBlock to scan
 });
@@ -101,7 +134,7 @@ const { status, payment: verified } = await sdk.verifyPayment({
 
 - its `noteId` recomputes from the stored `ownerHash`, amount and token;
 - it carries the request's `R` and `viewTag`;
-- it was emitted by `aggregatorAddress`;
+- it was emitted by the aggregator (`sdk.aggregatorAddress`, or `aggregatorAddress` when you pass one);
 - it is in the requested token;
 - its net amount reaches what `request.amount` yields after the vault fees at the shield block.
 
@@ -123,7 +156,7 @@ Two operational notes:
 
 `createPaymentRequest` and `verifyPayment` initialize `@0xcurvy/rs-core-wasm/core` lazily. They call the Domain A `send`/`ownerHash` and `noteId` primitives directly, and they do not depend on or bundle `@0xcurvy/curvy-sdk`. An omitted `checkoutCompletePath` defaults to `/checkout/complete` and is always included in the EIP-712 typed data.
 
-The standalone functions `createPaymentRequest({ receivingKeys, amount, token, chainId, merchantOrigin, ... })` and `verifyPayment({ ..., confirmations, paidWhen })` are also exported from `/merchant`.
+The standalone functions `createPaymentRequest({ receivingKeys, amount, token, chainId, merchantOrigin, ... })` and `verifyPayment({ ..., confirmations, paidWhen })` are also exported from `/merchant`. Standalone `verifyPayment` uses Curvy's aggregator on `request.chainId` unless you pass `aggregatorAddress`; on a chain the SDK does not know, it is required. `readChainFees` takes `chainId` instead of `vaultAddress` the same way.
 
 Store each attempt as one value: `serializePaymentRecord({ payment, fromBlock, verification })` returns a versioned JSON string holding the signed package, the scan start and the latest `verifyPayment` result (bigints as decimal strings). Read it back with `parsePaymentRecord`, which refuses unknown versions and fields. Keep the value whole rather than splitting it into columns: later SDK versions add fields under a new version.
 
@@ -152,6 +185,13 @@ return Response.json(data, { headers: result.headers });                       /
 ## Payment descriptions
 
 `createPaymentRequest` takes an optional `description` (at most 120 characters of plain text: no control or text-direction characters, no leading or trailing spaces). Checkout shows it under your shop's name and prints it on the buyer's receipt. It is signed with the payment as a `DescribedPaymentIntent`, a separate EIP-712 type, so it can't be changed, added or removed on the way. Intents without one are signed exactly as before. The description travels in the checkout link's fragment and is not part of what checkout registers with Curvy's payment service.
+
+## Breaking changes in 0.2.0-rc.2
+
+- `initialize` takes a required `environment: "mainnet" | "testnet"` instead of `chainId`. Pass `network: { chainId, aggregatorAddress }` for any other chain.
+- `initialize` and `createPaymentRequest` on an initialized SDK take `tokens`, a list of symbols or addresses; by default a request takes every token Curvy takes on the network (USDC and USDT on mainnet). `sdk.tokens` replaces `sdk.token`.
+- `createX402Merchant` takes `token` as a symbol or an address, and uses the SDK's own contract addresses on Curvy's networks instead of the broadcaster's.
+- On Arbitrum One, `verifyPayment` counts a payment up to 3% short as `paid` (see above). Every `VerifiedPayment` now has `shortfall` and `token`; payment records saved before still read, with `shortfall` 0 and `token` null.
 
 ## Breaking changes since 0.1.2
 

@@ -34,8 +34,10 @@ const VERIFIED: VerifiedPayment = {
   confirmations: 12n,
   noteId: BIG,
   vaultTokenId: 2n,
+  token: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
   netAmount: 24_975_000n,
   minimumNetAmount: 24_975_000n,
+  shortfall: 0n,
   portalShield: true,
   committed: false,
   siblingNoteIds: [BIG + 1n, 3n],
@@ -140,6 +142,15 @@ describe("payment records", () => {
     expect(() => parsePaymentRecord("{")).toThrow("payment record must be JSON");
     expect(() => parsePaymentRecord(JSON.parse(stored()))).toThrow("payment record must be a string");
     expect(() => parsePaymentRecord("[]")).toThrow("payment record must be an object");
+  });
+
+  it("reads records saved before shortfall and token were added", () => {
+    const valid = JSON.parse(stored());
+    const { shortfall: _shortfall, token: _token, ...older } = valid.verification.payment;
+    const record = parsePaymentRecord(
+      JSON.stringify({ ...valid, verification: { ...valid.verification, payment: older } }),
+    );
+    expect(record.verification?.payment).toMatchObject({ shortfall: 0n, token: null });
   });
 
   it("refuses to serialize a record it could not parse back", () => {

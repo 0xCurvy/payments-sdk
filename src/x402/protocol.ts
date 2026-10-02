@@ -134,9 +134,4 @@ export interface X402SupportedResponse {
   signers?: Record<string, string[]>;
 }
 
-/** The Curvy contracts a merchant needs on one chain, as the portal broadcaster reports them. */
-export interface CurvyDeployment {
-  aggregator: Address;
-  portalFactory: Address;
-  vault: Address;
-}
+export type { CurvyDeployment } from "../chain/networks";

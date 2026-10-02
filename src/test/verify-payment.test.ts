@@ -150,8 +150,10 @@ describe("verifyPayment with a txHash hint", () => {
         confirmations: 11n,
         noteId: slot.noteId,
         vaultTokenId: TOKEN_ID,
+        token: TOKEN,
         netAmount: PORTAL_MINIMUM,
         minimumNetAmount: PORTAL_MINIMUM,
+        shortfall: 0n,
         portalShield: true,
         committed: false,
         siblingNoteIds: [],
@@ -500,7 +502,8 @@ describe("initialize().verifyPayment", () => {
   it("binds confirmations from init", async () => {
     const sdk = initialize({
       recipient: RECIPIENT,
-      chainId: CHAIN_ID,
+      environment: "testnet",
+      network: { chainId: CHAIN_ID },
       merchantOrigin: "https://merchant.example",
       confirmations: 12,
     });
@@ -519,7 +522,12 @@ describe("initialize().verifyPayment", () => {
 
   it("binds paidWhen from init", async () => {
     const slot = await merchantSlot(PORTAL_MINIMUM);
-    const config = { recipient: RECIPIENT, chainId: CHAIN_ID, merchantOrigin: "https://merchant.example" };
+    const config = {
+      recipient: RECIPIENT,
+      environment: "testnet" as const,
+      network: { chainId: CHAIN_ID },
+      merchantOrigin: "https://merchant.example",
+    };
     const receipts = [shieldReceipt([slot])];
     const uncommitted = { publicClient: mockClient({ receipts }).client, aggregatorAddress: AGGREGATOR, request };
     const committedClient = mockClient({
@@ -547,7 +555,12 @@ describe("initialize().verifyPayment", () => {
   });
 
   it("rejects an unknown paidWhen at init", () => {
-    const config = { recipient: RECIPIENT, chainId: CHAIN_ID, merchantOrigin: "https://merchant.example" };
+    const config = {
+      recipient: RECIPIENT,
+      environment: "testnet" as const,
+      network: { chainId: CHAIN_ID },
+      merchantOrigin: "https://merchant.example",
+    };
     for (const paidWhen of ["finality", null]) {
       expect(() => initialize({ ...config, confirmations: 1, paidWhen: paidWhen as PaidWhen })).toThrow(
         'paidWhen must be "shielded" or "committed"',

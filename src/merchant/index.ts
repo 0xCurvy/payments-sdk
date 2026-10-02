@@ -4,7 +4,12 @@
   type CreatePaymentRequestParameters,
   createPaymentRequest,
 } from "./createPaymentRequest";
-export { type BoundVerifyPaymentParameters, initialize, type PaymentSDK, type PaymentSDKConfig } from "./initialize";
+export {
+  type BoundVerifyPaymentParameters,
+  initialize,
+  type PaymentSDK,
+  type PaymentSDKConfig,
+} from "./initialize";
 export type { RecipientParameters } from "./internal/resolveRecipient";
 export {
   buildMerchantKeySet,

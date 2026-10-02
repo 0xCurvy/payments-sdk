@@ -1,7 +1,16 @@
 ﻿export {
+  CURVY_NETWORKS,
+  type CurvyCurrency,
+  type CurvyDeployment,
+  type CurvyEnvironment,
+  type CurvyNetwork,
   findNoteInReceipt,
+  getCurvyNetwork,
+  getDefaultCurvyNetwork,
   type PredictPortalAddressParameters,
   predictPortalAddress,
+  ROUTED_PAYMENT_CHAIN_ID,
+  ROUTED_PAYMENT_TOLERANCE_BPS,
 } from "./chain";
 export { aggregatorAbi, pendingNotesAbi, portalFactoryAbi, vaultAbi } from "./contracts";
 export {
@@ -14,8 +23,10 @@ export {
   readChainFees,
 } from "./economics";
 export {
+  acceptedTokens,
   buildPaymentIntentTypedData,
   describedPaymentIntentTypes,
+  multiTokenPaymentIntentTypes,
   type PaymentIntentSigner,
   type PaymentIntentTypedData,
   parsePaymentIntent,
@@ -39,6 +50,7 @@ export {
   buildCheckoutCompleteUrl,
   buildCheckoutRetryUrl,
   buildCheckoutUrl,
+  CURVY_CHECKOUT_URL,
   decodePaymentIntentFragment,
   encodePaymentIntentFragment,
 } from "./transport";
