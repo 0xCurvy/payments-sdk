@@ -1,9 +1,12 @@
 ﻿export {
+  CURVY_API_URL,
   CURVY_NETWORKS,
   type CurvyCurrency,
   type CurvyDeployment,
   type CurvyEnvironment,
   type CurvyNetwork,
+  type FetchCurvyDeploymentParameters,
+  fetchCurvyDeployment,
   findNoteInReceipt,
   getCurvyNetwork,
   getDefaultCurvyNetwork,

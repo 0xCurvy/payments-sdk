@@ -1,5 +1,5 @@
 import type { Address } from "viem";
-import { getCurvyNetwork } from "../chain/networks";
+import { fetchCurvyDeployment } from "../chain/deployment";
 import { vaultAbi } from "../contracts";
 import type { PaymentReadClient } from "../types";
 
@@ -98,10 +98,14 @@ export function minimumPaymentAmount({ fees, rail, minNetAmount = 1n }: MinimumP
 
 export interface ReadChainFeesParameters {
   publicClient: PaymentReadClient;
-  /** The Curvy vault. Defaults to Curvy's vault on `chainId`; pass one of the two. */
+  /** The Curvy vault. Defaults to the vault the deployment at `apiBaseUrl` names on `chainId`; pass one of the two. */
   vaultAddress?: Address;
-  /** The chain the client reads, to find Curvy's vault on it when `vaultAddress` is omitted. */
+  /** The chain the client reads, to find the deployment's vault on it when `vaultAddress` is omitted. */
   chainId?: number;
+  /** The Curvy deployment's API base URL, as in the Curvy SDK. Defaults to production, `https://api.curvy.box`. */
+  apiBaseUrl?: string;
+  /** Used to read the deployment's contracts. Defaults to the global `fetch`. */
+  fetch?: typeof globalThis.fetch;
   /** ERC-20 the customer pays with; resolved to the vault's token id. */
   token: Address;
   /** Read fees as of a past block, e.g. the block that shielded a payment. */
@@ -113,17 +117,21 @@ export async function readChainFees({
   publicClient,
   vaultAddress: configuredVault,
   chainId,
+  apiBaseUrl,
+  fetch,
   token,
   blockNumber,
 }: ReadChainFeesParameters): Promise<ChainFees> {
-  const vaultAddress = configuredVault ?? (chainId === undefined ? undefined : getCurvyNetwork(chainId)?.vault);
-  if (vaultAddress === undefined) {
-    throw new Error(
-      chainId === undefined
-        ? "pass vaultAddress, or the chainId of a Curvy network"
-        : `vaultAddress is required: chain ${chainId} is not a Curvy network this SDK knows`,
-    );
-  }
+  if (configuredVault === undefined && chainId === undefined) throw new Error("pass vaultAddress, or chainId");
+  const vaultAddress =
+    configuredVault ??
+    (
+      await fetchCurvyDeployment({
+        chainId: chainId as number,
+        ...(apiBaseUrl === undefined ? {} : { apiBaseUrl }),
+        ...(fetch ? { fetch } : {}),
+      })
+    ).vault;
   const tokenId = await publicClient.readContract({
     address: vaultAddress,
     abi: vaultAbi,

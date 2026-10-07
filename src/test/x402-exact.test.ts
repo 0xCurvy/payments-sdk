@@ -112,6 +112,26 @@ function supportedResponse(
   };
 }
 
+/** A deployment's metadata registry (`GET {apiBaseUrl}/networks`), shaped like the Curvy API's. */
+function registryFetch(networks: { chainId: number; aggregator: Address; portalFactory: Address; vault: Address }[]) {
+  return vi.fn(async (url: string | URL | Request) =>
+    new URL(String(url)).pathname === "/networks"
+      ? Response.json({
+          data: networks.map((network) => ({
+            chainId: String(network.chainId),
+            aggregatorContractAddress: network.aggregator,
+            portalFactoryContractAddress: network.portalFactory,
+            vaultContractAddress: network.vault,
+          })),
+        })
+      : new Response("not found", { status: 404 }),
+  );
+}
+
+const LOCAL_REGISTRY = registryFetch([
+  { chainId: CHAIN_ID, aggregator: AGGREGATOR, portalFactory: PORTAL_FACTORY, vault: VAULT },
+]);
+
 interface Harness {
   facilitator: FacilitatorClient & {
     verify: ReturnType<typeof vi.fn>;
@@ -226,6 +246,7 @@ async function merchantFor(h: Harness, overrides: Record<string, unknown> = {}):
     settleTimeoutMs: 50,
     confirmPollMs: 10,
     onEvent: (event) => h.events.push(event),
+    fetch: LOCAL_REGISTRY,
     ...overrides,
   });
 }
@@ -534,12 +555,13 @@ describe("createX402Merchant", () => {
     expect(await merchant.quote(PRICE)).toMatchObject({ netAmount: "9840" });
   });
 
-  it("requires the broadcaster to serve the chain, or explicit addresses", async () => {
+  it("requires the deployment's API to serve the chain, or explicit addresses", async () => {
     const h = harness();
-    h.broadcaster.network.mockResolvedValueOnce(undefined);
-    await expect(merchantFor(h)).rejects.toThrow(/addresses\.aggregator is required/);
-    h.broadcaster.network.mockResolvedValueOnce(undefined);
+    await expect(merchantFor(h, { fetch: registryFetch([]) })).rejects.toThrow(
+      "http://broadcaster.test has no Curvy contracts for chain 31337",
+    );
     const pinned = await merchantFor(h, {
+      fetch: registryFetch([]),
       addresses: { aggregator: AGGREGATOR, portalFactory: PORTAL_FACTORY, vault: VAULT },
     });
     expect(pinned.addresses.vault).toBe(VAULT);
@@ -601,6 +623,71 @@ describe("createX402Merchant", () => {
     production.close();
     expect(createBroadcasterClient().url).toBe("https://api.curvy.box");
     expect(createFacilitatorClient().url).toBe("https://api.curvy.box/portal/x402");
+  });
+});
+
+describe("createX402Merchant: contracts by deployment", () => {
+  const network = (prefix: string) => ({
+    chainId: 42_161,
+    aggregator: getAddress(`0x${prefix}00000000000000000000000000000000000001`),
+    portalFactory: getAddress(`0x${prefix}00000000000000000000000000000000000002`),
+    vault: getAddress(`0x${prefix}00000000000000000000000000000000000003`),
+  });
+  const STAGING = network("aa");
+  const PRODUCTION = network("bb");
+  const API = vi.fn(async (url: string | URL | Request) => {
+    const { origin } = new URL(String(url));
+    return registryFetch([origin === "https://api.curvy.dev" ? STAGING : PRODUCTION])(url);
+  });
+
+  function arbitrum(): Harness {
+    const h = harness();
+    h.publicClient.getChainId.mockResolvedValue(42_161);
+    return h;
+  }
+  const contracts = ({ aggregator, portalFactory, vault }: typeof STAGING) => ({ aggregator, portalFactory, vault });
+
+  it("takes the contracts of the deployment apiBaseUrl names, production's too, like the Curvy SDK", async () => {
+    const staging = await merchantFor(arbitrum(), {
+      broadcaster: undefined,
+      apiBaseUrl: "https://api.curvy.dev",
+      facilitator: false,
+      enforceBroadcasterMinimum: false,
+      fetch: API,
+    });
+    expect(staging.addresses).toEqual(contracts(STAGING));
+    expect(staging.broadcaster.url).toBe("https://api.curvy.dev");
+    staging.close();
+
+    const production = await merchantFor(arbitrum(), {
+      broadcaster: undefined,
+      facilitator: false,
+      enforceBroadcasterMinimum: false,
+      fetch: API,
+    });
+    expect(production.addresses).toEqual(contracts(PRODUCTION));
+    expect(production.broadcaster.url).toBe("https://api.curvy.box");
+    production.close();
+  });
+
+  it("names the deployment by a broadcaster URL given without apiBaseUrl, and pins configured addresses", async () => {
+    const named = await merchantFor(arbitrum(), {
+      broadcaster: "https://api.curvy.dev",
+      facilitator: false,
+      enforceBroadcasterMinimum: false,
+      fetch: API,
+    });
+    expect(named.addresses).toEqual(contracts(STAGING));
+    named.close();
+
+    const pinned = await merchantFor(arbitrum(), {
+      apiBaseUrl: "https://api.curvy.dev",
+      facilitator: false,
+      addresses: { vault: VAULT },
+      fetch: API,
+    });
+    expect(pinned.addresses).toEqual({ ...contracts(STAGING), vault: VAULT });
+    pinned.close();
   });
 });
 
@@ -854,6 +941,7 @@ describe("createX402Merchant: broadcaster mode", () => {
       confirmations: 1,
       autoShield: false,
       onEvent: (event) => h.events.push(event),
+      fetch: LOCAL_REGISTRY,
       ...overrides,
     });
   }
@@ -980,6 +1068,7 @@ describe("createX402Merchant: broadcaster mode", () => {
       tokens: [TOKEN],
       confirmations: 1,
       autoShield: false,
+      fetch: LOCAL_REGISTRY,
     });
     expect(merchant.facilitator).toBeUndefined();
     expect(merchant.schemes).toEqual(["curvy-transfer"]);
@@ -994,6 +1083,7 @@ describe("createX402Merchant: broadcaster mode", () => {
         recipient: RECIPIENT,
         tokens: [TOKEN],
         schemes: ["exact"],
+        fetch: LOCAL_REGISTRY,
       }),
     ).rejects.toThrow(/needs a facilitator/);
   });
@@ -1018,6 +1108,7 @@ describe("createX402Merchant: broadcaster mode edge cases", () => {
       settleTimeoutMs: 50,
       confirmPollMs: 10,
       onEvent: (event) => h.events.push(event),
+      fetch: LOCAL_REGISTRY,
       ...overrides,
     });
   }
