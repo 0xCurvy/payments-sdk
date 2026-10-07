@@ -1,5 +1,10 @@
-/** Curvy's production portal broadcaster. Serves `GET /portal/networks/:chainId` for every chain it shields on. */
-export const CURVY_BROADCASTER_URL = "https://api.curvy.box";
+import { CURVY_API_URL } from "../chain/deployment";
+
+/**
+ * Curvy's production portal broadcaster: the production API gateway, `CURVY_API_URL`. Serves
+ * `GET /portal/networks/:chainId` for every chain it shields on.
+ */
+export const CURVY_BROADCASTER_URL = CURVY_API_URL;
 
 /** The x402 facilitator route the portal broadcaster serves, relative to its base URL. */
 export const CURVY_FACILITATOR_PATH = "/portal/x402";

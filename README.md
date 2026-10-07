@@ -83,13 +83,13 @@ const checkoutUrl = buildCheckoutUrl(payment); // Curvy's checkout page, https:/
 | `"mainnet"` | Arbitrum One (`42161`), real money | USDC and USDT |
 | `"testnet"` | Ethereum Sepolia (`11155111`), test money | USDC |
 
-The addresses are built into the SDK (`CURVY_NETWORKS`, `getCurvyNetwork`, `getDefaultCurvyNetwork`) rather than read from a Curvy service at runtime, because whoever controls the aggregator address decides what counts as a payment. `sdk.chainId`, `sdk.tokens` and `sdk.aggregatorAddress` show what was chosen; your RPC endpoint must serve `sdk.chainId`.
-
-Any other chain works with `network`: a staging or local deployment, or a Curvy network this SDK version does not know yet. Name its aggregator, give tokens by address, and pass your checkout page to `buildCheckoutUrl(checkoutUrl, payment)`:
+A deployment is named by its API base URL, as in the Curvy SDK: `https://api.curvy.box` (production, the default) or `https://api.curvy.dev` (staging). The SDK reads that deployment's contract addresses from its metadata registry (`GET {apiBaseUrl}/networks`, or `GET /portal/networks/:chainId` on a stack without one), so you never copy addresses: `apiBaseUrl` on `initialize`, `createX402Merchant`, `verifyPayment` and `readChainFees`. Addresses you pass yourself (`network.aggregatorAddress`, `addresses`, `aggregatorAddress`, `vaultAddress`) pin them instead.
 
 ```ts
-initialize({ environment: "testnet", network: { chainId: 31337, aggregatorAddress }, tokens: [tokenAddress], ... });
+initialize({ environment: "mainnet", apiBaseUrl: "https://api.curvy.dev", ... }); // Curvy staging on Arbitrum One
 ```
+
+`sdk.chainId`, `sdk.tokens` and `sdk.apiBaseUrl` show what was chosen; your RPC endpoint must serve `sdk.chainId`. Another chain, such as a local one, takes `network: { chainId }` (with `aggregatorAddress` to pin it) and tokens by address; pass your checkout page to `buildCheckoutUrl(checkoutUrl, payment)`.
 
 A known chain must match the environment: `environment: "mainnet"` with Sepolia's chain id throws.
 
@@ -186,6 +186,11 @@ return Response.json(data, { headers: result.headers });                       /
 ## Payment descriptions
 
 `createPaymentRequest` takes an optional `description` (at most 120 characters of plain text: no control or text-direction characters, no leading or trailing spaces). Checkout shows it under your shop's name and prints it on the buyer's receipt. It is signed with the payment as a `DescribedPaymentIntent`, a separate EIP-712 type, so it can't be changed, added or removed on the way. Intents without one are signed exactly as before. The description travels in the checkout link's fragment and is not part of what checkout registers with Curvy's payment service.
+
+## Breaking changes in 0.2.0-rc.4
+
+- Contract addresses come from the deployment's API, as in the Curvy SDK, on every network including production: `apiBaseUrl` (default `https://api.curvy.box`, `CURVY_API_URL`) on `initialize`, `createX402Merchant`, `verifyPayment` and `readChainFees`. The built-in addresses in `CURVY_NETWORKS` are no longer used for payments. A broadcaster URL given to `createX402Merchant` without `apiBaseUrl` still names the deployment.
+- `sdk.aggregatorAddress` is the pinned aggregator only (`network.aggregatorAddress`), else `undefined`; the deployment's is read on the first `verifyPayment`. New: `sdk.apiBaseUrl`, `fetchCurvyDeployment`, `CURVY_API_URL`.
 
 ## Breaking changes in 0.2.0-rc.3
 

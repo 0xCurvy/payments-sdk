@@ -11,7 +11,8 @@ import {
   TransactionReceiptNotFoundError,
 } from "viem";
 import { isAddress, isAddressEqual } from "viem/utils";
-import { getCurvyNetwork, ROUTED_PAYMENT_CHAIN_ID, ROUTED_PAYMENT_TOLERANCE_BPS } from "../chain/networks";
+import { fetchCurvyDeployment } from "../chain/deployment";
+import { ROUTED_PAYMENT_CHAIN_ID, ROUTED_PAYMENT_TOLERANCE_BPS } from "../chain/networks";
 import { aggregatorAbi, vaultAbi } from "../contracts";
 import { acceptedTokens, parsePaymentIntent } from "../intent/parsePaymentIntent";
 import type { PaymentIntent } from "../types";
@@ -60,10 +61,17 @@ export interface VerifyPaymentParameters {
   /** Client for the chain the request was created for (`request.chainId`). */
   publicClient: PaymentVerifyClient;
   /**
-   * Aggregator proxy address; only PendingNotes/CommittedNotes it emitted count. Defaults to Curvy's aggregator on
-   * `request.chainId`; required on a chain the SDK does not know.
+   * Aggregator proxy address; only PendingNotes/CommittedNotes it emitted count. Defaults to the aggregator the
+   * deployment at `apiBaseUrl` names on `request.chainId`.
    */
   aggregatorAddress?: Address;
+  /**
+   * The Curvy deployment's API base URL, as in the Curvy SDK, whose aggregator is used when `aggregatorAddress` is
+   * omitted. Defaults to production, `https://api.curvy.box`.
+   */
+  apiBaseUrl?: string;
+  /** Used to read the deployment's contracts. Defaults to the global `fetch`. */
+  fetch?: typeof globalThis.fetch;
   /** The request `createPaymentRequest` returned, as the merchant persisted it server-side. */
   request: PaymentIntent;
   /** Blocks (inclusive of the shield block) required before `paid`. Positive safe integer. */
@@ -194,6 +202,24 @@ interface LocatedPayments {
   noteIds: bigint[];
 }
 
+/** The aggregator to check against: the one given, else the deployment's on the request's chain. */
+async function aggregatorOf(parameters: VerifyPaymentParameters): Promise<Address | undefined> {
+  if (parameters.aggregatorAddress !== undefined) return parameters.aggregatorAddress;
+  let chainId: number;
+  try {
+    chainId = parsePaymentIntent(parameters.request).chainId;
+  } catch {
+    // parseParameters reports the invalid request.
+    return undefined;
+  }
+  const deployment = await fetchCurvyDeployment({
+    chainId,
+    ...(parameters.apiBaseUrl === undefined ? {} : { apiBaseUrl: parameters.apiBaseUrl }),
+    ...(parameters.fetch ? { fetch: parameters.fetch } : {}),
+  });
+  return deployment.aggregator;
+}
+
 function parseParameters(parameters: VerifyPaymentParameters): ParsedParameters {
   let request: PaymentIntent;
   try {
@@ -203,12 +229,9 @@ function parseParameters(parameters: VerifyPaymentParameters): ParsedParameters 
       cause: error,
     });
   }
-  const aggregatorAddress = parameters.aggregatorAddress ?? getCurvyNetwork(request.chainId)?.aggregator;
+  const { aggregatorAddress } = parameters;
   if (aggregatorAddress === undefined) {
-    throw new PaymentVerificationError(
-      "INVALID_INPUT",
-      `aggregatorAddress is required: chain ${request.chainId} is not a Curvy network this SDK knows`,
-    );
+    throw new PaymentVerificationError("INVALID_INPUT", "aggregatorAddress is required");
   }
   if (typeof aggregatorAddress !== "string" || !isAddress(aggregatorAddress, { strict: false })) {
     throw new PaymentVerificationError("INVALID_INPUT", "aggregatorAddress must be an address");
@@ -630,7 +653,7 @@ async function assessPayment(
  * a failed `eth_getLogs` throws an error naming the range.
  */
 export async function verifyPayment(parameters: VerifyPaymentParameters): Promise<PaymentVerification> {
-  const parsed = parseParameters(parameters);
+  const parsed = parseParameters({ ...parameters, aggregatorAddress: await aggregatorOf(parameters) });
   const chainId = await parsed.publicClient.getChainId();
   if (chainId !== parsed.request.chainId) {
     throw new PaymentVerificationError(

@@ -1,4 +1,5 @@
 ﻿import { type Address, getAddress, isAddress } from "viem";
+import { normalizeApiBaseUrl } from "../chain/deployment";
 import { type CurvyEnvironment, getCurvyNetwork, getDefaultCurvyNetwork, resolveTokens } from "../chain/networks";
 import type { PaymentIntent } from "../types";
 import {
@@ -26,8 +27,16 @@ export type PaymentSDKConfig = RecipientParameters & {
    */
   environment: CurvyEnvironment;
   /**
-   * A network other than the environment's: a staging or local chain, or a Curvy network this SDK version does
-   * not know yet. `aggregatorAddress` is required on a chain the SDK does not know.
+   * The Curvy deployment's API base URL, as in the Curvy SDK: `https://api.curvy.box` (production, the default) or
+   * `https://api.curvy.dev` (staging). Payments are checked against the aggregator its metadata registry names
+   * (`GET /networks`), read on the first check.
+   */
+  apiBaseUrl?: string;
+  /** Used to read the deployment's contracts. Defaults to the global `fetch`. */
+  fetch?: typeof globalThis.fetch;
+  /**
+   * A chain other than the environment's, such as a local one. `aggregatorAddress` pins the aggregator instead of
+   * reading it from `apiBaseUrl`.
    */
   network?: { chainId: number; aggregatorAddress?: Address };
   /**
@@ -55,7 +64,9 @@ export interface PaymentSDK {
   readonly chainId: number;
   /** The tokens requests take unless one names others; empty on a chain the SDK does not know, unless configured. */
   readonly tokens: readonly Address[];
-  /** The aggregator payments are checked against; `undefined` on a chain the SDK does not know, unless configured. */
+  /** The Curvy deployment whose contracts payments are checked against. */
+  readonly apiBaseUrl: string;
+  /** The pinned aggregator (`network.aggregatorAddress`); `undefined` reads the deployment's from `apiBaseUrl`. */
   readonly aggregatorAddress: Address | undefined;
   /**
    * `amount` is in the tokens' base units (USDC and USDT: 6 decimals). `tokens` default to the configured ones.
@@ -66,10 +77,10 @@ export interface PaymentSDK {
   verifyPayment(parameters: BoundVerifyPaymentParameters): Promise<PaymentVerification>;
 }
 
-/** The chain and aggregator: the environment's Curvy network, or the `network` override checked against it. */
+/** The chain, and a pinned aggregator if any: the environment's Curvy network, or the `network` override. */
 function resolveNetwork(config: PaymentSDKConfig): { chainId: number; aggregatorAddress: Address | undefined } {
   const preset = getDefaultCurvyNetwork(config.environment);
-  if (config.network === undefined) return { chainId: preset.chainId, aggregatorAddress: preset.aggregator };
+  if (config.network === undefined) return { chainId: preset.chainId, aggregatorAddress: undefined };
 
   const { chainId, aggregatorAddress } = config.network;
   if (!Number.isSafeInteger(chainId) || chainId <= 0) {
@@ -84,15 +95,13 @@ function resolveNetwork(config: PaymentSDKConfig): { chainId: number; aggregator
       `chain ${chainId} is a ${known.testnet ? "testnet" : "mainnet"} network, not ${config.environment}`,
     );
   }
-  return {
-    chainId,
-    aggregatorAddress: aggregatorAddress === undefined ? known?.aggregator : getAddress(aggregatorAddress),
-  };
+  return { chainId, aggregatorAddress: aggregatorAddress === undefined ? undefined : getAddress(aggregatorAddress) };
 }
 
 export function initialize(config: PaymentSDKConfig): PaymentSDK {
   const recipient = resolveRecipient(config);
   const { chainId, aggregatorAddress } = resolveNetwork(config);
+  const apiBaseUrl = normalizeApiBaseUrl(config.apiBaseUrl);
   const defaultTokens = resolveTokens(chainId, config.tokens);
   if (!Number.isSafeInteger(config.confirmations) || config.confirmations <= 0) {
     throw new Error("confirmations must be a positive safe integer");
@@ -141,6 +150,7 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
   return {
     chainId,
     tokens: defaultTokens,
+    apiBaseUrl,
     aggregatorAddress,
     async createPaymentRequest(parameters) {
       const tokens = parameters.tokens === undefined ? defaultTokens : resolveTokens(chainId, parameters.tokens);
@@ -162,6 +172,8 @@ export function initialize(config: PaymentSDKConfig): PaymentSDK {
       return verifyStoredPayment({
         ...parameters,
         aggregatorAddress: parameters.aggregatorAddress ?? aggregatorAddress,
+        apiBaseUrl,
+        ...(config.fetch ? { fetch: config.fetch } : {}),
         confirmations: config.confirmations,
         paidWhen: resolvedPaidWhen,
       });

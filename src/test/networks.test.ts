@@ -19,6 +19,25 @@ const ARBITRUM_USDT = "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9";
 const SEPOLIA_USDC = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238";
 const OTHER_TOKEN = getAddress("0x0000000000000000000000000000000000000003");
 
+/** Deployments' metadata registries (`GET {apiBaseUrl}/networks`) serving Arbitrum One with the given vault, by origin. */
+function registry(vaults: Record<string, string>) {
+  return vi.fn(async (url: string | URL | Request) => {
+    const { origin, pathname } = new URL(String(url));
+    const vault = vaults[origin];
+    if (pathname !== "/networks" || !vault) return new Response("not found", { status: 404 });
+    return Response.json({
+      data: [
+        {
+          chainId: "42161",
+          aggregatorContractAddress: "0x0000000000000000000000000000000000000004",
+          portalFactoryContractAddress: "0x0000000000000000000000000000000000000006",
+          vaultContractAddress: vault,
+        },
+      ],
+    });
+  });
+}
+
 describe("Curvy's networks", () => {
   it("pins the production contracts and stablecoins of Arbitrum One and Ethereum Sepolia", () => {
     expect(getCurvyNetwork(42_161)).toMatchObject({
@@ -62,7 +81,9 @@ describe("initialize with an environment", () => {
     expect(sdk).toMatchObject({
       chainId: 42_161,
       tokens: [ARBITRUM_USDC, ARBITRUM_USDT],
-      aggregatorAddress: "0xE51924cEF003a654EC9735c4d97f5D4862cBcbB1",
+      // Curvy production, whose aggregator is read from its API on the first check.
+      apiBaseUrl: "https://api.curvy.box",
+      aggregatorAddress: undefined,
     });
     const request = await sdk.createPaymentRequest({ amount: 4_000_000n });
     expect(request).toMatchObject({
@@ -134,16 +155,27 @@ describe("initialize with an environment", () => {
     );
   });
 
-  it("asks for the aggregator before checking a payment on a chain it does not know", async () => {
-    const local = initialize({ ...SHOP, environment: "testnet", network: { chainId: 31_337 }, tokens: [OTHER_TOKEN] });
+  it("reads the aggregator from the deployment's API before checking a payment", async () => {
+    const fetch = registry({});
+    const local = initialize({
+      ...SHOP,
+      environment: "testnet",
+      network: { chainId: 31_337 },
+      tokens: [OTHER_TOKEN],
+      apiBaseUrl: "http://127.0.0.1:4035",
+      fetch,
+    });
+    expect(local.apiBaseUrl).toBe("http://127.0.0.1:4035");
     const request = await local.createPaymentRequest({ amount: 1n });
     const publicClient = { getChainId: vi.fn().mockResolvedValue(31_337) };
     const parameters = { publicClient: publicClient as never, request, fromBlock: 1n };
-    await expect(local.verifyPayment(parameters)).rejects.toMatchObject({
-      code: "INVALID_INPUT",
-      message: "aggregatorAddress is required: chain 31337 is not a Curvy network this SDK knows",
-    });
-    await expect(verifyPayment({ ...parameters, confirmations: 1 })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(local.verifyPayment(parameters)).rejects.toThrow(
+      "http://127.0.0.1:4035 has no Curvy contracts for chain 31337",
+    );
+    expect(String(fetch.mock.calls[0]?.[0])).toBe("http://127.0.0.1:4035/networks");
+    await expect(verifyPayment({ ...parameters, confirmations: 1, fetch })).rejects.toThrow(
+      "https://api.curvy.box has no Curvy contracts for chain 31337",
+    );
   });
 });
 
@@ -161,18 +193,29 @@ describe("defaults for Curvy's networks", () => {
     ).toBe(true);
   });
 
-  it("reads fees from Curvy's vault on a known chain", async () => {
+  it("reads fees from the vault the deployment's API names, production's by default", async () => {
     const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
       if (functionName === "getTokenId") return 2n;
       if (functionName === "depositFee") return 10n;
       return { tokenId: 2n, portalDeployment: 50n, pendingNoteCommitment: 100n, withdrawal: 50n };
     });
-    await readChainFees({ publicClient: { readContract } as never, chainId: 42_161, token: ARBITRUM_USDC });
+    const fetch = registry({
+      "https://api.curvy.box": "0xcC8d5c60A8fb15Aa3793647eF531f1bA7dF24f00",
+      "https://api.curvy.dev": "0x25CD76612BFe4FddA794EFc416635B6D9a77CB7F",
+    });
+    const client = { readContract } as never;
+    await readChainFees({ publicClient: client, chainId: 42_161, token: ARBITRUM_USDC, fetch });
     expect(readContract).toHaveBeenCalledWith(
       expect.objectContaining({ address: "0xcC8d5c60A8fb15Aa3793647eF531f1bA7dF24f00", functionName: "getTokenId" }),
     );
-    await expect(
-      readChainFees({ publicClient: { readContract } as never, chainId: 31_337, token: ARBITRUM_USDC }),
-    ).rejects.toThrow("vaultAddress is required: chain 31337 is not a Curvy network this SDK knows");
+    readContract.mockClear();
+    const staging = { apiBaseUrl: "https://api.curvy.dev", fetch };
+    await readChainFees({ publicClient: client, chainId: 42_161, token: ARBITRUM_USDC, ...staging });
+    expect(readContract).toHaveBeenCalledWith(
+      expect.objectContaining({ address: "0x25CD76612BFe4FddA794EFc416635B6D9a77CB7F", functionName: "getTokenId" }),
+    );
+    await expect(readChainFees({ publicClient: client, chainId: 31_337, token: ARBITRUM_USDC, fetch })).rejects.toThrow(
+      "https://api.curvy.box has no Curvy contracts for chain 31337",
+    );
   });
 });

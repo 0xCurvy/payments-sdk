@@ -1,5 +1,6 @@
 import type { Address, Hex, PublicClient } from "viem";
 import { createPublicClient, erc20Abi, getAddress, http, isAddress, isHex, parseEventLogs } from "viem";
+import { CURVY_API_URL, fetchCurvyDeployment, normalizeApiBaseUrl } from "../../chain/deployment";
 import {
   getCurvyNetwork,
   ROUTED_PAYMENT_CHAIN_ID,
@@ -75,9 +76,15 @@ export type X402MerchantConfig = RecipientParameters & X402MerchantOptions;
 
 export interface X402MerchantOptions {
   /**
-   * Curvy's portal broadcaster URL or client. It shields every funded portal into your note, the same way it
-   * does for human checkout, and tells the SDK the Curvy contract addresses on the chain. Defaults to Curvy's
-   * production broadcaster, `https://api.curvy.box`.
+   * The Curvy deployment's API base URL, as in the Curvy SDK: `https://api.curvy.box` (production, the default) or
+   * `https://api.curvy.dev` (staging). The Curvy contract addresses come from its metadata registry
+   * (`GET /networks`), and its portal broadcaster and facilitator are served behind it.
+   */
+  apiBaseUrl?: string;
+  /**
+   * The portal broadcaster URL or client, when it is not the one behind `apiBaseUrl`. It shields every funded portal
+   * into your note, the same way it does for human checkout. A URL given here without `apiBaseUrl` also names the
+   * deployment.
    */
   broadcaster?: string | BroadcasterClient;
   /**
@@ -114,9 +121,8 @@ export interface X402MerchantOptions {
    */
   otherNetworks?: number[];
   /**
-   * Curvy contract addresses. Built into the SDK for Curvy's networks (Arbitrum One, Ethereum Sepolia); on any
-   * other chain, discovered from the broadcaster (`GET /portal/networks/:chainId`) when omitted. Pass them for such
-   * a chain in production, so confirmation does not depend on what a service says.
+   * Curvy contract addresses, to pin any of them. The rest come from the deployment's API (`apiBaseUrl`), as in the
+   * Curvy SDK.
    */
   addresses?: Partial<CurvyDeployment>;
   /**
@@ -299,12 +305,15 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
   // A mistyped or cut-off receiving key fails here, before any network call.
   const recipient = resolveRecipient(config);
   const fetchOption = config.fetch ? { fetch: config.fetch } : {};
+  // The deployment: `apiBaseUrl`, else the broadcaster named on its own (the earlier way to name it), else production.
+  const apiBaseUrl = normalizeApiBaseUrl(
+    config.apiBaseUrl ??
+      (typeof config.broadcaster === "string" ? config.broadcaster : config.broadcaster?.url) ??
+      CURVY_API_URL,
+  );
   const broadcaster =
     config.broadcaster === undefined || typeof config.broadcaster === "string"
-      ? createBroadcasterClient({
-          ...(config.broadcaster === undefined ? {} : { url: config.broadcaster }),
-          ...fetchOption,
-        })
+      ? createBroadcasterClient({ url: config.broadcaster ?? apiBaseUrl, ...fetchOption })
       : config.broadcaster;
   // The facilitator travels with the broadcaster: a local stack's broadcaster serves its own under /portal/x402.
   const facilitator =
@@ -370,25 +379,20 @@ export async function createX402Merchant(config: X402MerchantConfig): Promise<X4
     }
   }
   const recovery: Address = getAddress(config.recovery ?? NO_RECOVERY_ADDRESS);
-  // Configured addresses first, then the SDK's own for Curvy's networks; only other chains need the broadcaster's.
-  const builtIn = getCurvyNetwork(chainId);
-  const configured = {
-    aggregator: config.addresses?.aggregator ?? builtIn?.aggregator,
-    portalFactory: config.addresses?.portalFactory ?? builtIn?.portalFactory,
-    vault: config.addresses?.vault ?? builtIn?.vault,
-  };
-  const discovered =
-    configured.aggregator && configured.portalFactory && configured.vault && config.enforceBroadcasterMinimum === false
+  // Configured addresses first, then the deployment's, read from its API like the Curvy SDK does: production's
+  // contracts for https://api.curvy.box, staging's for https://api.curvy.dev, and so on.
+  const pinned = config.addresses ?? {};
+  const fromApi =
+    pinned.aggregator && pinned.portalFactory && pinned.vault
       ? undefined
-      : await broadcaster.network(chainId);
+      : await fetchCurvyDeployment({ apiBaseUrl, chainId, ...fetchOption });
   const addresses = {
-    aggregator: configured.aggregator ?? discovered?.aggregator,
-    portalFactory: configured.portalFactory ?? discovered?.portalFactory,
-    vault: configured.vault ?? discovered?.vault,
+    aggregator: pinned.aggregator ?? fromApi?.aggregator,
+    portalFactory: pinned.portalFactory ?? fromApi?.portalFactory,
+    vault: pinned.vault ?? fromApi?.vault,
   };
-  for (const [name, value] of Object.entries(addresses)) {
-    if (!value) throw new Error(`addresses.${name} is required: the broadcaster does not serve chain ${chainId}`);
-  }
+  // The broadcaster's minimum per portal; it no longer decides the contracts.
+  const discovered = config.enforceBroadcasterMinimum === false ? undefined : await broadcaster.network(chainId);
   const deployment = {
     aggregator: getAddress(addresses.aggregator as Address),
     portalFactory: getAddress(addresses.portalFactory as Address),

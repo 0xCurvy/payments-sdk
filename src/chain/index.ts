@@ -1,3 +1,8 @@
+export {
+  CURVY_API_URL,
+  type FetchCurvyDeploymentParameters,
+  fetchCurvyDeployment,
+} from "./deployment";
 export { findNoteInReceipt } from "./findNoteInReceipt";
 export {
   CURVY_NETWORKS,
